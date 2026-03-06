@@ -1,6 +1,6 @@
 # 🚀 MONGOT Ultimate Monitor
 
-Un cruscotto Enterprise avanzato e standalone per il monitoraggio dei nodi di ricerca MongoDB Atlas Search (`mongot`) deployati su Kubernetes tramite il MongoDB Kubernetes Operator (CRD `MongoDBSearch`).
+Un cruscotto Enterprise avanzato e standalone per il monitoraggio dei nodi di ricerca MongoDB Search (`mongot`) deployati su Kubernetes tramite il MongoDB Kubernetes Operator (CRD `MongoDBSearch`).
 
 Questo tool nasce per andare oltre le classiche metriche Prometheus. Incrocia in tempo reale i dati del database (Oplog, stato degli indici) con lo stato dell'infrastruttura (Kubernetes Events, PVC, CPU Limits, Live Logs) per fornire una vista unificata dello stack di ricerca e un vero e proprio **SRE Advisor automatico**.
 
