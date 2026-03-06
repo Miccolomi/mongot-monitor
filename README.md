@@ -4,7 +4,7 @@ Un cruscotto Enterprise avanzato e standalone per il monitoraggio dei nodi di ri
 
 Questo tool nasce per andare oltre le classiche metriche Prometheus. Incrocia in tempo reale i dati del database (Oplog, stato degli indici) con lo stato dell'infrastruttura (Kubernetes Events, PVC, CPU Limits, Live Logs) per fornire una vista unificata dello stack di ricerca e un vero e proprio **SRE Advisor automatico**.
 
-![MONGOT Ultimate Monitor](https://raw.githubusercontent.com/Miccolomi/mongot-monitor/main/screenshot.png) *(Aggiungi uno screenshot della dashboard nel repo e aggiorna questo link!)*
+![MONGOT Ultimate Monitor](https://github.com/Miccolomi/mongot-monitor/blob/main/Screenshot.png) 
 
 ## ✨ Caratteristiche Principali
 
@@ -25,16 +25,68 @@ Questo tool nasce per andare oltre le classiche metriche Prometheus. Incrocia in
 
 1. Clona il repository:
    ```bash
-   git clone [https://github.com/Miccolomi/mongot-monitor.git](https://github.com/Miccolomi/mongot-monitor.git)
+   git clone https://github.com/Miccolomi/mongot-monitor.git
    cd mongot-monitor
-Crea un virtual environment (consigliato):Bashpython3 -m venv venv
-source venv/bin/activate
-Installa le dipendenze:Bashpip install pymongo flask flask-cors kubernetes requests
-(Puoi anche salvare queste dipendenze in un file requirements.txt ed eseguire pip install -r requirements.txt)🚀 UtilizzoIl monitor è un'applicazione Flask zero-configuration lato frontend (HTML/JS/CSS sono serviti direttamente dal backend).1. Esecuzione Standalone (dal tuo Mac / PC Locale)Se hai kubectl già configurato per puntare al tuo cluster, lo script userà automaticamente il tuo Kubeconfig locale.Bashpython mongot_monitor.py \
+   ```
+
+2. Crea un virtual environment (consigliato):
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+
+3. Installa le dipendenze:
+   ```bash
+   pip install pymongo flask flask-cors kubernetes requests
+   ```
+   *(Puoi anche salvare queste dipendenze in un file `requirements.txt` ed eseguire `pip install -r requirements.txt`)*
+
+## 🚀 Utilizzo
+
+Il monitor è un'applicazione Flask zero-configuration lato frontend (HTML/JS/CSS sono serviti direttamente dal backend).
+
+### 1. Esecuzione Standalone (dal tuo Mac / PC Locale)
+
+Se hai `kubectl` già configurato per puntare al tuo cluster, lo script userà automaticamente il tuo Kubeconfig locale.
+
+```bash
+python mongot_monitor.py \
   --uri "mongodb://<USER>:<PASSWORD>@<HOSTS>/?replicaSet=<RS>&tls=true&authSource=admin" \
   --namespace mongodb
-Sostituisci --namespace mongodb con il namespace K8s dove risiedono i tuoi pod mongot.Apri il browser all'indirizzo: http://localhost:50502. Esecuzione In-Cluster (come Pod K8s)Se vuoi deployare questo monitor stabilmente all'interno del tuo cluster Kubernetes, usa il flag --in-cluster. In questo modo lo script utilizzerà il ServiceAccount del pod per interrogare le API di K8s.Bashpython mongot_monitor.py \
+```
+
+*Sostituisci `--namespace mongodb` con il namespace K8s dove risiedono i tuoi pod `mongot`.*
+
+Apri il browser all'indirizzo: **http://localhost:5050**
+
+### 2. Esecuzione In-Cluster (come Pod K8s)
+
+Se vuoi deployare questo monitor stabilmente all'interno del tuo cluster Kubernetes, usa il flag `--in-cluster`. In questo modo lo script utilizzerà il ServiceAccount del pod per interrogare le API di K8s.
+
+```bash
+python mongot_monitor.py \
   --uri "mongodb://..." \
   --namespace mongodb \
   --in-cluster
-(Nota: Il ServiceAccount associato al pod dovrà avere un Role/ClusterRole con permessi di lettura su pods, pods/log, pods/exec, events, services, persistentvolumeclaims e sui CRD mongodbsearch e deployments).⚙️ Parametri CLIParametroDescrizioneDefault--uriStringa di connessione a MongoDB.None (Solo metriche K8s)--portPorta su cui esporre la dashboard web.5050--hostInterfaccia di binding per Flask.0.0.0.0--namespaceNamespace Kubernetes da scansionare.Auto-discover su tutti--in-clusterAttiva l'autenticazione K8s via ServiceAccount.False🧠 Come funziona il SRE Advisor?Il pannello Compliance & Best Practices calcola automaticamente i seguenti indicatori:Spazio Disco (Regola del 125%): Verifica che ci sia abbastanza spazio libero (1.25x dell'usato) per permettere a Lucene di fare il rebuild degli indici in background.Consolidamento Indici: Avvisa se ci sono troppi indici frammentati sulla stessa collection (anti-pattern).Collo di Bottiglia I/O: Incrocia la Disk Queue Length con l'Oplog Lag per capire se i dischi Kubernetes (PVC) stanno soffocando l'indicizzazione.Rapporto CPU/QPS: Verifica che ci sia almeno 1 Core allocato ogni 10 Queries Per Second in base al traffico rilevato dal profiler di MongoDB.
+```
+
+*(Nota: Il ServiceAccount associato al pod dovrà avere un Role/ClusterRole con permessi di lettura su `pods`, `pods/log`, `pods/exec`, `events`, `services`, `persistentvolumeclaims` e sui CRD `mongodbsearch` e `deployments`).*
+
+## ⚙️ Parametri CLI
+
+| Parametro | Descrizione | Default |
+| :--- | :--- | :--- |
+| `--uri` | Stringa di connessione a MongoDB. | `None` (Solo metriche K8s) |
+| `--port` | Porta su cui esporre la dashboard web. | `5050` |
+| `--host` | Interfaccia di binding per Flask. | `0.0.0.0` |
+| `--namespace` | Namespace Kubernetes da scansionare. | Auto-discover su tutti |
+| `--in-cluster` | Attiva l'autenticazione K8s via ServiceAccount. | `False` |
+
+## 🧠 Come funziona il SRE Advisor?
+
+Il pannello **Compliance & Best Practices** calcola automaticamente i seguenti indicatori:
+
+* **Spazio Disco (Regola del 125%)**: Verifica che ci sia abbastanza spazio libero (1.25x dell'usato) per permettere a Lucene di fare il rebuild degli indici in background.
+* **Consolidamento Indici**: Avvisa se ci sono troppi indici frammentati sulla stessa collection (anti-pattern).
+* **Collo di Bottiglia I/O**: Incrocia la *Disk Queue Length* con l'*Oplog Lag* per capire se i dischi Kubernetes (PVC) stanno soffocando l'indicizzazione.
+* **Rapporto CPU/QPS**: Verifica che ci sia almeno 1 Core allocato ogni 10 Queries Per Second in base al traffico rilevato dal profiler di MongoDB.
