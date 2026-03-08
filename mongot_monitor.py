@@ -95,8 +95,20 @@ def discover_operator_info() -> dict:
                     dname = dep.metadata.name.lower()
                     if "mongodb" in dname and ("operator" in dname or "controller" in dname):
                         containers = dep.spec.template.spec.containers or []
+                        
+                        # Find the actual pod name for logs
+                        pod_name = dname
+                        if k8s_v1:
+                            try:
+                                pods = k8s_v1.list_namespaced_pod(ns)
+                                for p in pods.items:
+                                    if p.metadata.name.startswith(dname):
+                                        pod_name = p.metadata.name
+                                        break
+                            except: pass
+
                         return {
-                            "name": dep.metadata.name, "namespace": ns,
+                            "name": dep.metadata.name, "namespace": ns, "pod_name": pod_name,
                             "image": containers[0].image if containers else "?",
                             "replicas": dep.status.ready_replicas or 0, "desired": dep.spec.replicas or 1
                         }
@@ -220,14 +232,33 @@ def get_pod_metrics() -> dict:
 
 # ── MongoDB & Prometheus ────────────────────────────────
 def get_oplog_info() -> dict:
-    info = {"latest_oplog_time": None, "oplog_size_mb": 0}
+    info = {"head_time": None, "tail_time": None, "window_hours": 0, "head_timestamp": 0}
     if not mongo_client: return info
     try:
         db = mongo_client["local"]
-        last_op = db["oplog.rs"].find().sort("$natural", -1).limit(1)
-        for doc in last_op:
-            if "ts" in doc: info["latest_oplog_time"] = doc["ts"].as_datetime().strftime("%Y-%m-%dT%H:%M:%SZ")
-    except Exception: pass
+        oplog = db["oplog.rs"]
+        
+        # HEAD (Ultimo record scritto)
+        head_cur = oplog.find().sort("$natural", -1).limit(1)
+        # TAIL (Record più vecchio ancora presente)
+        tail_cur = oplog.find().sort("$natural", 1).limit(1)
+        
+        head_doc, tail_doc = None, None
+        for doc in head_cur: head_doc = doc
+        for doc in tail_cur: tail_doc = doc
+        
+        if head_doc and "ts" in head_doc:
+            info["head_timestamp"] = head_doc["ts"].time
+            info["head_time"] = head_doc["ts"].as_datetime().strftime("%H:%M:%S")
+            
+        if tail_doc and "ts" in tail_doc:
+            info["tail_time"] = tail_doc["ts"].as_datetime().strftime("%H:%M:%S")
+            
+        if head_doc and tail_doc and "ts" in head_doc and "ts" in tail_doc:
+            diff_sec = head_doc["ts"].time - tail_doc["ts"].time
+            info["window_hours"] = round(diff_sec / 3600, 2)
+            
+    except Exception as e: log.error(f"Errore Oplog: {e}")
     return info
 
 
@@ -315,7 +346,9 @@ def scrape_mongot_prometheus(pod_name: str, namespace: str, pod_ip: str, port: i
         if line.startswith("#") or not line.strip(): continue
         if "{" in line: key, val = line[:line.index("{")], line[line.rindex("}") + 1:].strip()
         else: parts = line.split(); key, val = (parts[0], parts[1]) if len(parts)>1 else ("", "")
-        try: raw[key] = float(val)
+        try: 
+            v = float(val)
+            raw[key] = raw.get(key, 0.0) + v
         except: pass
     
     result["raw_count"] = len(raw)
@@ -355,12 +388,12 @@ def scrape_mongot_prometheus(pod_name: str, namespace: str, pod_ip: str, port: i
         "indexing": {
             "indexes_in_catalog": g("mongot_configState_indexesInCatalog"), "staged_indexes": g("mongot_configState_stagedIndexes"),
             "indexes_phasing_out": g("mongot_configState_indexesPhasingOut"), "steady_witnessed_updates": g("mongot_indexing_steadyStateChangeStream_witnessedChangeStreamUpdates_total"),
-            "steady_applicable_updates": g("mongot_indexing_steadyStateChangeStream_applicableChangeStreamUpdates_total"),
+            "steady_applicable_updates": g("mongot_index_stats_replication_steadyState_batchTotalApplicableDocuments_sum"),
             "steady_batches_in_progress": g("mongot_indexing_steadyStateChangeStream_batchesInProgressTotal"),
             "steady_batch_sec_max": g("mongot_indexing_steadyStateChangeStream_batchesInProgressTotalDurations_seconds_max"),
             "steady_unexpected_failures": g("mongot_indexing_steadyStateChangeStream_unexpectedBatchFailures_total"),
             "initial_sync_in_progress": g("mongot_initialsync_dispatcher_inProgressSyncs"), "initial_sync_queued": g("mongot_initialsync_dispatcher_queuedSyncs"),
-            "change_stream_lag_sec": g("mongot_indexing_steadyStateChangeStream_lag_seconds", 0)
+            "change_stream_lag_sec": g("mongot_index_stats_indexing_replicationLagMs", 0) / 1000.0
         },
         "lucene_merge": {
             "running_merges": g("mongot_mergeScheduler_currentlyRunningMerges"), "merging_docs": g("mongot_mergeScheduler_currentlyMergingDocs"),
@@ -384,16 +417,29 @@ def pod_logs(namespace, pod_name):
         return jsonify({"logs": k8s_v1.read_namespaced_pod_log(name=pod_name, namespace=namespace, tail_lines=50)})
     except Exception as e: return jsonify({"error": str(e)}), 500
 
+def get_k8s_version() -> str:
+    if not K8S_AVAILABLE or not k8s_client: return "N/A"
+    try: return k8s_client.VersionApi().get_code().git_version
+    except Exception: return "N/A"
+
+# Cache globale per la dashboard
+metrics_cache = {
+    "data": {},
+    "timestamp": 0,
+    "last_scrape": {} # {pod_name: {"time": float, "applicable_updates": float}}
+}
+
 @app.route("/metrics")
 def metrics():
     global metrics_cache
     now = time.time()
     
-    if metrics_cache["data"] and (now - metrics_cache["timestamp"]) < CACHE_TTL_SEC:
+    if metrics_cache.get("data") and (now - metrics_cache.get("timestamp", 0)) < CACHE_TTL_SEC:
         return jsonify(metrics_cache["data"])
 
     t0 = time.time()
     res = {
+        "k8s_version": get_k8s_version(),
         "operator": discover_operator_info(),
         "mongodbsearch_crds": discover_mongodbsearch_crds(),
         "mongot_pods": discover_mongot_pods(),
@@ -426,12 +472,29 @@ def metrics():
                 pod_port = port
                 break
                 
-        prom_metrics[p["name"]] = scrape_mongot_prometheus(p["name"], p["namespace"], p.get("pod_ip","127.0.0.1"), pod_port)
+        metrics = scrape_mongot_prometheus(p["name"], p["namespace"], p.get("pod_ip","127.0.0.1"), pod_port)
+        
+        # Calcolo Rateo / Secondo per le metriche cumulative
+        pod_key = p["name"]
+        curr_updates = metrics.get("categories", {}).get("indexing", {}).get("steady_applicable_updates", 0)
+        metrics["categories"]["indexing"]["steady_applicable_updates_sec"] = 0.0
+        
+        if pod_key in metrics_cache["last_scrape"]:
+            last = metrics_cache["last_scrape"][pod_key]
+            dt = now - last["time"]
+            du = curr_updates - last["applicable_updates"]
+            if dt > 0 and du >= 0:
+                metrics["categories"]["indexing"]["steady_applicable_updates_sec"] = round(du / dt, 1)
+                
+        metrics_cache["last_scrape"][pod_key] = {"time": now, "applicable_updates": curr_updates}
+        
+        prom_metrics[pod_key] = metrics
     
     res["mongot_prometheus"] = prom_metrics
     res["_collect_ms"] = round((time.time() - t0) * 1000, 1)
     
-    metrics_cache = {"data": res, "timestamp": now}
+    metrics_cache["data"] = res
+    metrics_cache["timestamp"] = now
     return jsonify(res)
 
 @app.route("/")
@@ -496,6 +559,27 @@ td{padding:8px 10px;border-bottom:1px solid #111827}
 .adv-val{font-size:11px; color:#c9d1e0; margin-bottom:4px}
 .adv-doc{font-size:10px; color:#6b7394; font-style:italic}
 .st-pass{color:#00e676} .st-warn{color:#ffab00} .st-crit{color:#ff1744}
+
+/* Sync Pipeline Styles */
+.pipe-box{background:#111827;border-radius:12px;padding:24px;border:1px solid #374151;margin-top:20px;box-shadow:inset 0 0 20px #00000080}
+.pipe-tit{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:#facc15;margin-bottom:20px;display:flex;justify-content:space-between}
+.pipe-flow{display:flex;align-items:flex-start;justify-content:space-between;background:#030712;padding:20px;border-radius:8px;position:relative;flex-wrap:nowrap;overflow-x:auto}
+.pipe-node-wrapper{display:flex;flex-direction:column;align-items:center;flex:1;min-width:120px;max-width:150px;z-index:2}
+.pipe-node{text-align:center;background:#1e293b;padding:12px 10px;border-radius:8px;border:2px solid #475569;width:100%;transition:0.3s all;margin-bottom:8px;position:relative}
+.pipe-node:hover{transform:scale(1.03)}
+.pipe-lbl{font-size:11px;color:#cbd5e1;text-transform:uppercase;display:block;margin-bottom:6px;letter-spacing:1px}
+.pipe-val{font-size:16px;font-weight:bold;display:block}
+.pipe-sub{font-size:10px;color:#94a3b8;margin-top:4px;display:block}
+.pipe-desc{font-size:9px;color:#64748b;text-align:center;line-height:1.3}
+.pipe-line{position:absolute;top:45px;left:0;right:0;height:3px;background:linear-gradient(90deg, #475569 50%, transparent 50%);background-size:12px 3px;z-index:1;animation:flow 1s linear infinite}
+@keyframes flow{from{background-position:0 0}to{background-position:12px 0}}
+.pn-ok{border-color:#00e676;color:#00e676;box-shadow:0 0 15px #00e67640}
+.pn-warn{border-color:#ffab00;color:#ffab00;box-shadow:0 0 15px #ffab0040}
+.pn-crit{border-color:#ff1744;color:#ff1744;box-shadow:0 0 15px #ff174460;animation:pulse 1s infinite alternate}
+@keyframes pulse{from{box-shadow:0 0 15px #ff174460}to{box-shadow:0 0 35px #ff174490}}
+.crit-badge{position:absolute;top:-10px;right:-10px;background:#ef4444;color:white;font-size:9px;font-weight:bold;padding:2px 6px;border-radius:4px;box-shadow:0 2px 4px rgba(0,0,0,0.5);border:1px solid #7f1d1d;animation:pulse 1s infinite alternate;white-space:nowrap;z-index:3}
+.crit-val{color:#ef4444;font-size:13px;font-weight:bold;display:block;margin-top:4px;border-top:1px dashed #ef4444;padding-top:4px}
+.warn-val{color:#ffab00;font-size:13px;font-weight:bold;display:block;margin-top:4px;border-top:1px dashed #ffab00;padding-top:4px}
 </style>
 </head>
 <body>
@@ -537,14 +621,14 @@ async function toggleLogs(ns, pod) {
   if(openLogs.has(pod)) {
       openLogs.delete(pod);
       if($(`log-${pod}`)) $(`log-${pod}`).style.display = 'none';
-      if($(`btn-log-${pod}`)) $(`btn-log-${pod}`).innerText = '▶ Mostra Live Logs del Pod';
+      if($(`btn-log-${pod}`)) $(`btn-log-${pod}`).innerText = pod.includes('operator') ? '▶ Mostra Live Logs Operator' : '▶ Mostra Live Logs del Pod';
   } else {
       openLogs.add(pod);
       if($(`log-${pod}`)) {
           $(`log-${pod}`).style.display = 'block';
           $(`log-${pod}`).innerText = "Caricamento in corso...";
       }
-      if($(`btn-log-${pod}`)) $(`btn-log-${pod}`).innerText = '▼ Nascondi Logs';
+      if($(`btn-log-${pod}`)) $(`btn-log-${pod}`).innerText = pod.includes('operator') ? '▼ Nascondi Logs Operator' : '▼ Nascondi Logs';
       await fetchAndUpdateLog(ns, pod);
   }
 }
@@ -555,7 +639,13 @@ async function fetchAndUpdateLog(ns, pod) {
       const r = await fetch(`/api/logs/${ns}/${pod}`);
       const d = await r.json();
       logCache[pod] = d.logs || "Nessun log disponibile.";
-      if($(`log-${pod}`)) $(`log-${pod}`).textContent = logCache[pod];
+      const el = $(`log-${pod}`);
+      if(el) {
+          const cTop = el.scrollTop, cH = el.scrollHeight, cClient = el.clientHeight;
+          const atBot = cTop + cClient >= cH - 15;
+          el.textContent = logCache[pod];
+          el.scrollTop = atBot ? el.scrollHeight : cTop;
+      }
   } catch(e) {
       if($(`log-${pod}`)) $(`log-${pod}`).innerHTML = `<span style="color:red">Errore: ${e.message}</span>`;
   }
@@ -663,6 +753,29 @@ function buildAdvisorHTML(d, pods, promAll, idxs) {
         }
     });
 
+    // 7. Storage Class Advisor
+    let storageStatus = { state: 'PASSED', val: 'Nessuna StorageClass palesemente lenta rilevata per i nodi Search.' };
+    if (d.mongot_pvcs && d.mongot_pvcs.length > 0) {
+        const slowClasses = d.mongot_pvcs.filter(p => p.storage_class && (p.storage_class.includes('hostpath') || p.storage_class.includes('standard') || p.storage_class.includes('slow')));
+        if (slowClasses.length > 0) {
+            storageStatus.state = 'WARNING';
+            storageStatus.val = `Trovati PVC associati a StorageClass lente o di default (${slowClasses.map(p=>p.storage_class).join(', ')}). MongoDB Search richiede dischi NVMe/SSD ad alte prestazioni (es. gp3, io2) per l'I/O Lucene.`;
+        } else {
+            storageStatus.val = `StorageClass rilevate in uso: ${[...new Set(d.mongot_pvcs.map(p=>p.storage_class))].join(', ')}. Assicurati che siano dischi ad alto throughput.`;
+        }
+    }
+
+    // 8. Versioning Advisor
+    let verStatus = { state: 'PASSED', val: `Ambiente aggiornato o versionamento corretto. K8s: ${d.k8s_version||'N/A'}` };
+    if (d.operator && d.operator.image) {
+        if (d.operator.image.endsWith(':latest')) {
+            verStatus.state = 'WARNING';
+            verStatus.val = `L'immagine dell'Operator (${d.operator.image}) usa il tag ':latest'. In produzione (MCK) usare always tag immutabili esatti.`;
+        } else {
+            verStatus.val = `L'Operator usa un tag esatto immutabile: ${d.operator.image.split(':').pop()||'OK'}. K8s Cluster Version: ${d.k8s_version||'N/A'}.`;
+        }
+    }
+
     // Builder riga HTML
     const stCls = { 'PASSED': 'st-pass', 'WARNING': 'st-warn', 'CRITICAL': 'st-crit' };
     const stIco = { 'PASSED': '🟢 PASSED', 'WARNING': '🟡 WARNING', 'CRITICAL': '🔴 CRIT' };
@@ -692,6 +805,18 @@ function buildAdvisorHTML(d, pods, promAll, idxs) {
           </div>`;
 
     h += `<div class="adv-card">
+            <div class="adv-title"><span>Performance Storage Class (PVC)</span><span class="${stCls[storageStatus.state]}">${stIco[storageStatus.state]}</span></div>
+            <div class="adv-val"><b>Rilevato:</b> ${storageStatus.val}</div>
+            <div class="adv-doc">📖 Doc: "MongoDB requires high performance disks. Using standard or hostPath provisioners might cause MMap flushing issues and severe IO wait."</div>
+          </div>`;
+
+    h += `<div class="adv-card">
+            <div class="adv-title"><span>Versionamento K8s Operator (MCK)</span><span class="${stCls[verStatus.state]}">${stIco[verStatus.state]}</span></div>
+            <div class="adv-val"><b>Rilevato:</b> ${verStatus.val}</div>
+            <div class="adv-doc">📖 Doc: "Using the :latest tag on the Kubernetes Operator implies unexpected breaking changes on pod restarts."</div>
+          </div>`;
+
+    h += `<div class="adv-card">
             <div class="adv-title"><span>Rapporto CPU / QPS</span><span class="${stCls[qpsStatus.state]}">${stIco[qpsStatus.state]}</span></div>
             <div class="adv-val"><b>Rilevato:</b> ${qpsStatus.val}</div>
             <div class="adv-doc">📖 Doc: "A general starting point is 1 CPU core for every 10 QPS."</div>
@@ -702,6 +827,39 @@ function buildAdvisorHTML(d, pods, promAll, idxs) {
             <div class="adv-val"><b>Rilevato:</b> ${oomStatus.val}</div>
             <div class="adv-doc">📖 Doc: "mongot utilizes memory-mapped files. The container memory limit MUST be substantially higher than the internal maxCapacityMB heap."</div>
           </div>`;
+
+    // 4. PREDICTIVE SRE: OPLOG WINDOW
+    if (d.oplog_info && d.oplog_info.head_timestamp) {
+        let worst_lag_sec = 0;
+        pods.forEach(p => {
+            const prom = promAll[p.name]||{};
+            // Estimating lag using Prometheus change_stream_lag_sec or heuristic fallback
+            let p_lag = 0;
+            if(prom.categories && prom.categories.indexing && prom.categories.indexing.change_stream_lag_sec) {
+                p_lag = prom.categories.indexing.change_stream_lag_sec;
+            }
+            if(p_lag > worst_lag_sec) worst_lag_sec = p_lag;
+        });
+        
+        let opSt = 'ok'; let opMsg = 'Finestra Oplog Ampia e Sicura';
+        let opDoc = `Finestra totale stimata: ${d.oplog_info.window_hours}h. Lag attuale massimo: ${Math.round(worst_lag_sec)}s`;
+        
+        if (d.oplog_info.window_hours > 0 && worst_lag_sec > 0) {
+            let lag_hours = worst_lag_sec / 3600;
+            if (lag_hours > (d.oplog_info.window_hours * 0.7)) {
+                opSt = 'crit'; opMsg = 'CRITICO: Mongot Lag ha consumato il +70% dell\'Oplog!';
+                opDoc = "⚠️ Se continua, Mongot perderà il Resume Token e crasherà (Initial Sync obbligata). Aumenta la dimensione dell'Oplog di MongoDB o riavvia mongot!";
+            } else if (lag_hours > (d.oplog_info.window_hours * 0.4)) {
+                opSt = 'warn'; opMsg = 'Attenzione: Mongot in forte ritardo di Replication';
+            }
+        }
+        
+        h += `<div class="adv-card" style="margin-top:12px; border-top:1px dashed #1e2740; padding-top:12px; border-bottom:none; margin-bottom:0; padding-bottom:0;">
+                <div class="adv-title"><span>🔥 SRE Predittivo: Oplog Window Exceeded</span><span class="${stCls[opSt]}">${stIco[opSt]}</span></div>
+                <div class="adv-val" style="color:${stCls[opSt]}"><b>Stato:</b> ${opMsg}</div>
+                <div class="adv-doc">📖 ${opDoc}</div>
+              </div>`;
+    }
 
     h += `</div>`;
     return h;
@@ -721,15 +879,24 @@ function render(d) {
 
   // 1. OPLOG E DISCOVERY
   h+=`<div class="c s2"><div class="c-h"><span>🌍</span><span class="c-t">Global DB Status</span></div>`;
-  if(d.oplog_info && d.oplog_info.latest_oplog_time) h+=row('Ultima scrittura DB (Oplog Head)', `<span style="color:#00e676">${new Date(d.oplog_info.latest_oplog_time).toLocaleTimeString()}</span>`);
-  else h+=row('Oplog Head', '<span style="color:#ffab00">Non disponibile</span>');
+  if(d.oplog_info && d.oplog_info.head_time) {
+      h+=row('Oplog Head (Last Write)', `<span style="color:#00e676">${d.oplog_info.head_time}</span>`);
+      h+=row('Oplog Window (Max Lag)', `<span class="${d.oplog_info.window_hours<6?'red':d.oplog_info.window_hours<24?'ylw':'grn'}">${d.oplog_info.window_hours} ore</span>`);
+  } else h+=row('Oplog Info', '<span style="color:#ffab00">Non disponibile</span>');
   h+=row('MongoDB Conn.', d.mongo_connected?'<span class="grn">Connesso</span>':'<span class="red">N/A</span>');
   h+=row('K8s API Conn.', (pods.length||crds.length||op.name)?'<span class="grn">Connesso</span>':'<span class="red">N/A</span>');
   h+=row('Tempo raccolta',`${d._collect_ms||'?'} ms`);
   h+=`</div>`;
 
   h+=`<div class="c s2"><div class="c-h"><span>📋</span><span class="c-t">K8s Discovery</span></div>`;
-  if(op.name) h+=row('Operator',`${op.name} (${op.replicas||0}/${op.desired||1})`);
+  h+=row('K8s Cluster',`<span class="cyn">${d.k8s_version||'N/A'}</span>`);
+  if(op.name) {
+      h+=row('Operator',`${op.name} (${op.replicas||0}/${op.desired||1})`);
+      const rpod = op.pod_name || op.name;
+      const isop=openLogs.has(rpod);
+      h+=`<div style="margin-top:6px;margin-bottom:6px"><button id="btn-log-${rpod}" class="btn" style="width:100%;font-size:10px;padding:4px" onclick="toggleLogs('${op.namespace}', '${rpod}')">${isop?'▼ Nascondi Logs Operator':'▶ Mostra Live Logs Operator'}</button></div>`;
+      h+=`<pre id="log-${rpod}" class="term" style="display:${isop?'block':'none'};margin-top:4px">${logCache[rpod]||'Caricamento in corso...'}</pre>`;
+  }
   h+=row('CRDs Trovati',`<span class="pur">${crds.length}</span>`);
   h+=row('Pod mongot',`<span class="blu">${pods.length}</span>`);
   h+=row('Indici di Ricerca',`<span class="grn">${idxs.length}</span>`);
@@ -846,8 +1013,109 @@ function render(d) {
     h+=row('Net sent',`<span class="grn">${fB(net.bytes_sent)}</span>`);
     h+=row('Net errors',`<span class="${(net.in_errors+net.out_errors)>0?'red':'grn'}">${fN(net.in_errors+net.out_errors)}</span>`);
     h+=`</div>`;
+    h+=`</div>`;
 
-    h+=`</div></div>`;
+    // 7. THE KILLER FEATURE: ATLAS SEARCH SYNC PIPELINE ANALYZER
+    const m_urlParams = new URLSearchParams(window.location.search);
+    const mergeThreshold = parseFloat(m_urlParams.get('merge_threshold')) || 3.0;
+
+    let lag_sec = idx.change_stream_lag_sec || 0; // Estratto direttamente da mongot Prometheus!
+    let lag_str = `${lag_sec.toFixed(1)}s`; let lag_color = "#00e676";
+    if (lag_sec > 120) { lag_str = `${lag_sec.toFixed(1)}s ritardo`; lag_color = "#ff1744"; }
+    else if (lag_sec > 15) { lag_str = `${lag_sec.toFixed(1)}s ritardo`; lag_color = "#ffab00"; }
+    else if (lag_sec > 0.5) { lag_str = `${lag_sec.toFixed(1)}s`; lag_color = "#ffeb3b"; }
+
+    // Analizziamo i colli di bottiglia (Bottlenecks)
+    // 1. Oplog Stream (Mongo -> RAM)
+    let stream_cls = (idx.steady_batches_in_progress > 2 || lag_sec > 30) ? 'pn-warn' : 'pn-ok';
+    if(lag_sec > 120 && idx.steady_applicable_updates == 0) stream_cls = 'pn-crit'; // Change stream rotto o impiccato
+
+    // 2. RAM Parsing
+    let ram_cls = jvm.heap_used_bytes > (jvm.heap_max_bytes * 0.85) ? 'pn-crit' : 'pn-ok';
+    let ram_alert_html = '';
+    if (idx.steady_batch_sec_max > 2.0) {
+        ram_cls = idx.steady_batch_sec_max > 5.0 ? 'pn-crit' : 'pn-warn';
+        let av_cls = idx.steady_batch_sec_max > 5.0 ? 'crit-val' : 'warn-val';
+        ram_alert_html = `<span class="${av_cls}">⏳ LENTO: ${idx.steady_batch_sec_max.toFixed(1)}s</span>
+                          ${idx.steady_batch_sec_max > 5.0 ? '<div class="crit-badge">BOTTLENECK!</div>' : ''}`;
+    }
+
+    // 3. Lucene Disk IO
+    let disk_cls = luc.running_merges > 0 && dsk.queue_length > 2 ? 'pn-warn' : 'pn-ok';
+    let disk_alert_html = '';
+    if(luc.merge_time_sec_max > (mergeThreshold * 0.5)) {
+        disk_cls = luc.merge_time_sec_max > mergeThreshold ? 'pn-crit' : 'pn-warn';
+        let d_cls = luc.merge_time_sec_max > mergeThreshold ? 'crit-val' : 'warn-val';
+        disk_alert_html = `<span class="${d_cls}">⏳ LENTO: ${luc.merge_time_sec_max.toFixed(1)}s</span>
+                           ${luc.merge_time_sec_max > mergeThreshold ? '<div class="crit-badge">BOTTLENECK!</div>' : ''}`;
+    }
+
+    h+=`<div class="pipe-box">
+          <div class="pipe-tit">
+            <span>🚀 Sync Pipeline Analyzer</span>
+            <div>
+              <span style="color:#facc15; font-size:10px; margin-right:15px; font-weight:normal; cursor:pointer;" onclick="let t=prompt('Inserisci nuova soglia Merge in sec:', '${mergeThreshold}'); if(t) window.location.search='?merge_threshold='+t;">
+                Soglia allarme Merge: <b>${mergeThreshold}s (modifica)</b>
+              </span>
+              <span style="color:${lag_color}">Lag Search Sync: <b>${lag_str}</b></span>
+            </div>
+          </div>
+          <div class="pipe-flow">
+            <div class="pipe-line"></div>
+            
+            <div class="pipe-node-wrapper">
+              <div class="pipe-node pn-ok">
+                <span class="pipe-lbl">MongoDB</span>
+                <span class="pipe-val">Oplog</span>
+                <span class="pipe-sub">Tailing</span>
+              </div>
+              <div class="pipe-desc">Origine dati.<br>Registra ogni modifica al database.</div>
+            </div>
+            
+            <div class="pipe-node-wrapper">
+              <div class="pipe-node ${stream_cls}">
+                <span class="pipe-lbl">Stream</span>
+                <span class="pipe-val">${fN(idx.steady_applicable_updates)} <span style="font-size:10px; font-weight:normal; color:#94a3b8">Tot</span></span>
+                <span class="pipe-sub" style="color:#00e676; font-size:11px; font-weight:bold; margin-top:6px">+ ${fN(idx.steady_applicable_updates_sec || 0)}/s</span>
+              </div>
+              <div class="pipe-desc">Lettura in tempo reale.<br>Cattura i dati dall'Oplog.</div>
+            </div>
+            
+            <div class="pipe-node-wrapper">
+              <div class="pipe-node ${ram_cls}">
+                <span class="pipe-lbl">RAM Parse</span>
+                <span class="pipe-val" style="font-size:14px">${fB(jvm.heap_used_bytes)}</span>
+                <span class="pipe-sub">su ${fB(jvm.heap_max_bytes)} Heap</span>
+                <span class="pipe-sub" style="color:#facc15; font-size:10px; margin-top:6px">${(idx.steady_batch_sec_max * 1000).toFixed(0)} ms lat | CPU: ${(promAll[p.name]?.categories?.process?.cpu_usage || 0).toFixed(1)}%</span>
+                ${ram_alert_html}
+              </div>
+              <div class="pipe-desc">Consumo JVM.<br>Ritardi se la CPU o RAM saturano.</div>
+            </div>
+            
+            <div class="pipe-node-wrapper" title="Merge: processo in background di deframmentazione su disco. Anche se sotto sforzo (diventa rosso), i documenti potrebbero essere già ricercabili nei segmenti RAM temporanei. Non indica necessariamente un lag lato utente.">
+              <div class="pipe-node ${disk_cls}">
+                <span class="pipe-lbl">Lucene Merge</span>
+                <span class="pipe-val">${fN(luc.total_merges)}</span>
+                <span class="pipe-sub">Total runs</span>
+                <span class="pipe-sub" style="color:#00b8d4; font-size:10px; margin-top:6px; font-weight:bold;">Disk Queue: ${fN(promAll[p.name]?.categories?.disk?.queue_length || 0)}</span>
+                ${disk_alert_html}
+              </div>
+              <div class="pipe-desc">Scrittura su disco.<br>Fonde i dati nell'indice Lucene.</div>
+            </div>
+            
+            <div class="pipe-node-wrapper" title="Lag Search Sync: tempo effettivo tra la scrittura su MongoDB e la disponibilità della ricerca. Vede anche i dati nei segmenti RAM prima del merge su disco!">
+              <div class="pipe-node ${lag_sec>30?'pn-warn':'pn-ok'}">
+                <span class="pipe-lbl">$search</span>
+                <span class="pipe-val" style="font-size:14px">${lag_sec>30?'OLD':'READY'}</span>
+                <span class="pipe-sub">Query: ${(promAll[p.name]?.categories?.search_commands?.search_latency_sec * 1000 || 0).toFixed(0)} ms</span>
+                <span class="pipe-sub" style="color:#ea15f2; font-size:10px; margin-top:4px; font-weight:bold;">AI Vector: ${(promAll[p.name]?.categories?.search_commands?.vectorsearch_latency_sec * 1000 || 0).toFixed(0)} ms</span>
+              </div>
+              <div class="pipe-desc">Indice Atlas Search.<br>Tempi di risposta al client.</div>
+            </div>
+          </div>
+        </div>`;
+
+    h+=`</div>`;
   });
 
   if(!pods.length) h+=`<div class="c s4"><div class="empty">Nessun pod mongot trovato</div></div>`;
@@ -862,17 +1130,19 @@ function render(d) {
   // 5. TABELLA PVCS E SERVICES
   if(pvcs.length||svcs.length){
     h+=`<div class="c s4"><div class="c-h"><span>💾</span><span class="c-t">Storage &amp; Services</span></div>`;
-    pvcs.forEach(p=>{h+=`<div style="display:flex;justify-content:space-between;font-size:11px;padding:3px 0;border-bottom:1px solid #111827"><span style="color:#e8ecf4">📦 PVC: ${p.name}</span><span>${pill(p.status)} <span class="blu">${p.capacity}</span></span></div>`});
+    pvcs.forEach(p=>{h+=`<div style="display:flex;justify-content:space-between;font-size:11px;padding:3px 0;border-bottom:1px solid #111827"><span style="color:#e8ecf4">📦 ${p.name} <span style="color:#6b7394;margin-left:8px">(SC: ${p.storage_class || 'N/A'})</span></span><span>${pill(p.status)} <span class="blu">${p.capacity}</span></span></div>`});
     svcs.forEach(s=>{const pts=(s.ports||[]).map(p=>`${p.port}`).join(',');h+=`<div style="display:flex;justify-content:space-between;font-size:11px;padding:3px 0;border-bottom:1px solid #111827"><span style="color:#e8ecf4">🔗 SVC: ${s.name}</span><span><span class="tag tag-v">${s.type}</span> Port(s) :${pts}</span></div>`});
     h+=`</div>`;
   }
 
   $('grid').innerHTML=h;
 
-  // Richiama asincronamente i log aperti per farli aggiornare fluida mente
+  // Richiama asincronamente i log aperti per farli aggiornare
   openLogs.forEach(pod => {
-      const p = pods.find(x => x.name === pod);
-      if(p) fetchAndUpdateLog(p.namespace, p.name);
+      let p = pods.find(x => x.name === pod);
+      if(!p && op.pod_name && op.pod_name === pod) p = op;
+      else if(!p && op.name === pod) p = op;
+      if(p) fetchAndUpdateLog(p.namespace, p.name || p.pod_name);
   });
 }
 
