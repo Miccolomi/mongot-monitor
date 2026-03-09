@@ -39,9 +39,8 @@ This tool is built to go beyond standard Prometheus metrics. It correlates real-
 
 3. Install dependencies:
    ```bash
-   pip install pymongo flask flask-cors kubernetes requests
+   pip install -r requirements.txt
    ```
-   *(Alternatively, save these to a `requirements.txt` file and run `pip install -r requirements.txt`)*
 
 ## 🚀 Usage
 

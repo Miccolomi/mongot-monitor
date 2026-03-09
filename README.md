@@ -39,9 +39,8 @@ Questo tool nasce per andare oltre le classiche metriche Prometheus. Incrocia in
 
 3. Installa le dipendenze:
    ```bash
-   pip install pymongo flask flask-cors kubernetes requests
+   pip install -r requirements.txt
    ```
-   *(Puoi anche salvare queste dipendenze in un file `requirements.txt` ed eseguire `pip install -r requirements.txt`)*
 
 ## 🚀 Utilizzo
 
