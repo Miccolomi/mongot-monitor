@@ -691,6 +691,10 @@ def healthcheck():
         
     return jsonify(status), 200
 
+@app.route("/favicon.ico")
+def favicon():
+    return "", 204
+
 @app.route("/")
 def dashboard():
     HTML = r"""<!DOCTYPE html>
