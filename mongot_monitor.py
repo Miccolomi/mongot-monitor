@@ -855,25 +855,29 @@ function buildAdvisorHTML(d, pods, promAll, idxs) {
     let h = `<div class="c s4" style="background:#0a0d14; border:1px solid #1a1f2e; padding:20px;">
              <h3 style="color:#ffab00; margin-bottom:16px; font-size:14px; letter-spacing:1px;">🏅 COMPLIANCE & BEST PRACTICES ADVISOR</h3>`;
 
-    // 1. Regola Spazio Disco (125%)
+    // 1. Regola Spazio Disco (200% Rule + 90% Read-Only)
     let diskStatus = { state: 'PASSED', text: '', val: '' };
     let minHeadroom = 999;
-    let worstPod = "";
+    let worstPod = '';
     pods.forEach(p => {
-        const dsk = (promAll[p.name] && promAll[p.name].categories.disk) || {};
-        if(dsk.data_path_total_bytes > 0) {
+        const dsk = (promAll[p.name] && promAll[p.name].categories && promAll[p.name].categories.disk) ? promAll[p.name].categories.disk : null;
+        if(dsk && dsk.data_path_total_bytes > 0) {
             const used = dsk.data_path_total_bytes - dsk.data_path_free_bytes;
-            const requiredFree = used * 1.25;
-            const ratio = dsk.data_path_free_bytes / requiredFree;
-            if(ratio < minHeadroom) { minHeadroom = ratio; worstPod = p.name; }
-            if(dsk.data_path_free_bytes < requiredFree) {
+            const requiredFree = used * 2.0;
+            const pctUsed = (used / dsk.data_path_total_bytes) * 100;
+            if(pctUsed >= 90) {
                 diskStatus.state = 'CRITICAL';
-                diskStatus.val = `On pod ${p.name}, the free space (${fB(dsk.data_path_free_bytes)}) is LESS than 125% of current index size (${fB(requiredFree)} required). Risk of stall!`;
+                diskStatus.val += `Pod ${p.name} disk is at ${pctUsed.toFixed(1)}%. MONGOT IS IN READ-ONLY MODE.`;
+            } else if(dsk.data_path_free_bytes < requiredFree && diskStatus.state !== 'CRITICAL') {
+                diskStatus.state = 'WARNING';
+                diskStatus.val = `On pod ${p.name}, free space (${fB(dsk.data_path_free_bytes)}) is LESS than 200% of current index size (${fB(requiredFree)} required).`;
             }
+            const ratio = dsk.data_path_free_bytes / (used || 1);
+            if(ratio < minHeadroom) { minHeadroom = ratio; worstPod = p.name; }
         }
     });
     if(diskStatus.state === 'PASSED') {
-        diskStatus.val = `All pods have free space > 125% of the used size (Worst safety index: ${(minHeadroom*100).toFixed(0)}% on ${worstPod||'N/A'}).`;
+        diskStatus.val = `All pods have free space > 200% of the used size (Worst safety ratio: ${(minHeadroom*100).toFixed(0)}% on ${worstPod||'N/A'}).`;
     }
 
     // 2. Index Consolidation
@@ -900,24 +904,50 @@ function buildAdvisorHTML(d, pods, promAll, idxs) {
         }
     });
 
-    // 4. CPU / QPS
+    // 4. CPU & QPS (Official Sizing: < 80% CPU, 10 QPS / Core)
     let qpsStatus = { state: 'PASSED', text: '', val: '' };
     let totalCores = 0;
-    pods.forEach(p => totalCores += p.cpu_limit_cores);
-    if(totalCores === 0) { // Fallback on process metrics se K8s limits assenti
-        pods.forEach(p => {
-            const prom = promAll[p.name];
-            if(prom && prom.categories.process && prom.categories.process.cpu_count) totalCores = Math.max(totalCores, prom.categories.process.cpu_count);
-        });
+    let maxCpuUsage = 0;
+    pods.forEach(p => {
+        totalCores += p.cpu_limit_cores;
+        const prom = promAll[p.name];
+        if(prom && prom.categories && prom.categories.process && prom.categories.process.cpu_usage) {
+           maxCpuUsage = Math.max(maxCpuUsage, prom.categories.process.cpu_usage);
+        }
+    });
+    if(totalCores === 0 && pods.length > 0) { // Fallback
+        const prom0 = promAll[pods[0].name];
+        const cpuCnt = (prom0 && prom0.categories && prom0.categories.process) ? prom0.categories.process.cpu_count : 1;
+        totalCores = cpuCnt * pods.length;
     }
     totalCores = totalCores || 1;
+    const maxCpuPct = maxCpuUsage * 100;
     const qps = (d.search_perf && d.search_perf.queries_per_sec) ? d.search_perf.queries_per_sec : 0;
-    if(qps > totalCores * 10) {
+    
+    if (maxCpuPct > 80) {
+        qpsStatus.state = 'CRITICAL';
+        qpsStatus.val = `CPU Usage is ${maxCpuPct.toFixed(1)}% (above 80% threshold). Node is overloaded, scale up immediately.`;
+    } else if(qps > totalCores * 10) {
         qpsStatus.state = 'WARNING';
-        qpsStatus.val = `The cluster handles ${qps} QPS with only ${totalCores} cores allocated. You are above the target (1 core per 10 QPS).`;
+        qpsStatus.val = `The cluster handles ${qps} QPS with only ${totalCores} cores. You are above the target (1 core per 10 QPS), but CPU is under 80% (${maxCpuPct.toFixed(1)}%).`;
     } else {
-        qpsStatus.val = `Allocated ${totalCores} Cores for ${qps} total QPS. Ratio within guidelines.`;
+        qpsStatus.val = `Highest CPU is ${maxCpuPct.toFixed(1)}%. Allocated ${totalCores} Cores for ${qps} QPS. Ratio within guidelines.`;
     }
+
+    // 4.5 Memory Page Faults (Official Sizing: > 1000/s is starvation)
+    let pfStatus = { state: 'PASSED', text: '', val: 'Major Page Faults per second are well within safe thresholds.' };
+    pods.forEach(p => {
+        const prom = promAll[p.name];
+        if(!prom || !prom.categories || !prom.categories.memory) return;
+        const pf = prom.categories.memory.major_page_faults_sec || 0;
+        if(pf > 1000) {
+            pfStatus.state = 'CRITICAL';
+            pfStatus.val = `Pod ${p.name} is experiencing ${pf.toFixed(0)} Major Page Faults / sec! This indicates Memory Starvation. Increase pod RAM limits immediately.`;
+        } else if (pf > 500 && pfStatus.state !== 'CRITICAL') {
+            pfStatus.state = 'WARNING';
+            pfStatus.val = `Pod ${p.name} is experiencing ${pf.toFixed(0)} Major Page Faults / sec. Monitor memory usage closely.`;
+        }
+    });
 
     // 5. Rischio OOMKilled (Memoria MMap vs Heap)
     let oomStatus = { state: 'PASSED', text: '', val: '' };
@@ -980,9 +1010,9 @@ function buildAdvisorHTML(d, pods, promAll, idxs) {
     const stIco = { 'PASSED': '🟢 PASSED', 'WARNING': '🟡 WARNING', 'CRITICAL': '🔴 CRIT' };
 
     h += `<div class="adv-card">
-            <div class="adv-title"><span>Disk Space (125% Rule)</span><span class="${stCls[diskStatus.state]}">${stIco[diskStatus.state]}</span></div>
+            <div class="adv-title"><span>Disk Space (200% Rule)</span><span class="${stCls[diskStatus.state]}">${stIco[diskStatus.state]}</span></div>
             <div class="adv-val"><b>Detected:</b> ${diskStatus.val}</div>
-            <div class="adv-doc">📖 Doc: "Always ensure you have at least 125% of your current index size available as free disk space to accommodate rebuilds."</div>
+            <div class="adv-doc">📖 Doc: "Allocate double the disk space your index requires. mongot becomes read-only when disk utilization reaches 90%."</div>
           </div>`;
           
     h += `<div class="adv-card">
@@ -1016,9 +1046,15 @@ function buildAdvisorHTML(d, pods, promAll, idxs) {
           </div>`;
 
     h += `<div class="adv-card">
-            <div class="adv-title"><span>CPU / QPS Ratio</span><span class="${stCls[qpsStatus.state]}">${stIco[qpsStatus.state]}</span></div>
+            <div class="adv-title"><span>CPU Usage & QPS (80% Rule)</span><span class="${stCls[qpsStatus.state]}">${stIco[qpsStatus.state]}</span></div>
             <div class="adv-val"><b>Detected:</b> ${qpsStatus.val}</div>
-            <div class="adv-doc">📖 Doc: "A general starting point is 1 CPU core for every 10 QPS."</div>
+            <div class="adv-doc">📖 Doc: "If CPU usage is consistently above 80%, you likely need to scale up. 1 CPU core for every 10 QPS is a starting point."</div>
+          </div>`;
+
+    h += `<div class="adv-card">
+            <div class="adv-title"><span>Memory Starvation (Page Faults)</span><span class="${stCls[pfStatus.state]}">${stIco[pfStatus.state]}</span></div>
+            <div class="adv-val"><b>Detected:</b> ${pfStatus.val}</div>
+            <div class="adv-doc">📖 Doc: "If Search Page Faults are consistently over 1000 per second, your system needs more memory."</div>
           </div>`;
 
     h += `<div class="adv-card" style="border-bottom:none; margin-bottom:0; padding-bottom:0;">
