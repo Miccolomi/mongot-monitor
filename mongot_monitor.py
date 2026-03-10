@@ -738,7 +738,7 @@ td{padding:8px 10px;border-bottom:1px solid #111827}
 .tag-f{background:#00b0ff22;color:#40c4ff;border:1px solid #00b0ff44}
 .tag-run{background:#00e67622;color:#00e676;border:1px solid #00e67644}
 .tag-fail{background:#ff174422;color:#ff1744;border:1px solid #ff174444}
-.pod-meta{font-size:10px;color:#4a5578;margin-top:2px}
+.pod-meta{font-size:10px;color:#e8ecf4;margin-top:2px}
 .gauge{display:flex;flex-direction:column;align-items:center;gap:4px}
 .gauge-v{font-size:18px;font-weight:700}.gauge-u{font-size:11px;opacity:0.6}.gauge-l{font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#6b7394;font-weight:600}
 .empty{text-align:center;padding:16px;font-size:12px;color:#4a5578}
@@ -1341,7 +1341,7 @@ function render(d) {
               <div class="pipe-node pn-ok">
                 <span class="pipe-lbl">MongoDB</span>
                 <span class="pipe-val" style="font-size:14px">Oplog</span>
-                <span class="pipe-sub">Conn: ${fN(vitals.connections_active)} | Lcks: ${vitals.active_writers}</span>
+                <span class="pipe-sub">Conn: ${fN(vitals.connections_active)} | Lcks: ${vitals.active_writers || 0}</span>
                 <span class="pipe-sub" style="color:#00e676; font-size:10px; margin-top:6px; font-weight:bold;">Write Ops: + ${fN(vitals.ops_insert_sec + vitals.ops_update_sec + vitals.ops_delete_sec)}/s</span>
               </div>
               <div class="pipe-desc">Data origin.<br>Records every database edittion.</div>
