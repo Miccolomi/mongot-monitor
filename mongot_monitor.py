@@ -624,7 +624,8 @@ def metrics():
         
         # Calcolo Rateo / Secondo per le metriche cumulative
         pod_key = p["name"]
-        curr_updates = metrics.get("categories", {}).get("indexing", {}).get("steady_applicable_updates", 0)
+        metrics.setdefault("categories", {}).setdefault("indexing", {})
+        curr_updates = metrics["categories"]["indexing"].get("steady_applicable_updates", 0)
         metrics["categories"]["indexing"]["steady_applicable_updates_sec"] = 0.0
         
         if pod_key in metrics_cache["last_scrape"]:
