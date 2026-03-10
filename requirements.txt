@@ -1,5 +1,6 @@
 Flask>=2.0.0
 Flask-Cors>=3.0.0
 requests>=2.25.0
+urllib3<2
 kubernetes>=21.0.0
 pymongo>=4.0.0
