@@ -60,7 +60,7 @@ TARGET_NAMESPACE = None
 
 # Cache metrics to prevent overloading K8s and MongoDB APIs
 metrics_cache = {"data": None, "timestamp": 0}
-CACHE_TTL_SEC = 10
+CACHE_TTL_SEC = 2
 
 
 # ── Kubernetes Discovery & Events ───────────────────────
