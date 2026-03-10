@@ -367,7 +367,7 @@ def scrape_mongot_prometheus(pod_name: str, namespace: str, pod_ip: str, port: i
             # 2. Fallback API Proxy
             try:
                 text = k8s_v1.connect_get_namespaced_pod_proxy_with_path(
-                    name=f"{pod_name}:{port}", namespace=namespace, path="metrics"
+                    name=f"{pod_name}:{port}", namespace=namespace, path="metrics", _request_timeout=5
                 )
             except Exception as e2:
                 scrape_errs.append(f"API Proxy: {str(e2)}")
@@ -387,7 +387,9 @@ def scrape_mongot_prometheus(pod_name: str, namespace: str, pod_ip: str, port: i
         if "{" in line: key, val = line[:line.index("{")], line[line.rindex("}") + 1:].strip()
         else: parts = line.split(); key, val = (parts[0], parts[1]) if len(parts)>1 else ("", "")
         try: 
+            import math
             v = float(val)
+            if math.isnan(v): v = 0.0
             raw[key] = raw.get(key, 0.0) + v
         except: pass
     
