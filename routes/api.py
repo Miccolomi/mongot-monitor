@@ -1,0 +1,141 @@
+"""
+API blueprint — all JSON/data endpoints.
+/metrics and /healthcheck read from state.metrics_cache (written by BackgroundCollector).
+"""
+
+import time
+
+from flask import Blueprint, jsonify, request, Response
+
+import state
+from security import is_valid_k8s_name
+
+api_bp = Blueprint("api", __name__)
+
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+
+@api_bp.route("/api/logs/<namespace>/<pod_name>")
+def pod_logs(namespace, pod_name):
+    if not is_valid_k8s_name(namespace) or not is_valid_k8s_name(pod_name):
+        return jsonify({"error": "Invalid namespace or pod name"}), 400
+    if not state.k8s_v1:
+        return jsonify({"error": "K8s API not available"}), 500
+    try:
+        logs = state.k8s_v1.read_namespaced_pod_log(
+            name=pod_name, namespace=namespace, tail_lines=50
+        )
+        return jsonify({"logs": logs})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@api_bp.route("/api/download_logs/<namespace>/<pod_name>")
+def download_logs(namespace, pod_name):
+    if not is_valid_k8s_name(namespace) or not is_valid_k8s_name(pod_name):
+        return "Invalid namespace or pod name", 400
+    if not state.k8s_v1:
+        return "K8s API not available", 500
+    try:
+        t_param = request.args.get("time", "all")
+        lvl_param = request.args.get("level", "all").lower()
+
+        since_sec = {"10m": 600, "1h": 3600, "24h": 86400}.get(t_param)
+
+        if since_sec:
+            raw_logs = state.k8s_v1.read_namespaced_pod_log(
+                name=pod_name, namespace=namespace, since_seconds=since_sec
+            )
+        else:
+            raw_logs = state.k8s_v1.read_namespaced_pod_log(
+                name=pod_name, namespace=namespace
+            )
+
+        if lvl_param == "error":
+            keywords = ("error", "fatal", "exception", "warning")
+            lines = [l for l in raw_logs.splitlines() if any(k in l.lower() for k in keywords)]
+            final_log_data = "\n".join(lines) or "No errors detected in this timeframe."
+        else:
+            final_log_data = raw_logs
+
+        return Response(
+            final_log_data,
+            mimetype="text/plain",
+            headers={"Content-Disposition": f"attachment; filename={pod_name}_logs_{t_param}_{lvl_param}.txt"},
+        )
+    except Exception as e:
+        return f"Error: {str(e)}", 500
+
+
+# ── Advisor ───────────────────────────────────────────────────────────────────
+
+@api_bp.route("/api/advisor")
+def advisor():
+    with state.cache_lock:
+        findings = state.metrics_cache.get("advisor")
+
+    if findings is None:
+        return jsonify({"error": "Collector starting, no data yet"}), 503
+
+    return jsonify(findings)
+
+
+# ── Metrics ───────────────────────────────────────────────────────────────────
+
+@api_bp.route("/metrics")
+def metrics():
+    with state.cache_lock:
+        data = state.metrics_cache["data"]
+
+    if data is None:
+        return jsonify({"error": "Collector starting, no data yet"}), 503
+
+    return jsonify(data)
+
+
+# ── Healthcheck ───────────────────────────────────────────────────────────────
+
+@api_bp.route("/healthcheck")
+def healthcheck():
+    status = {"status": "healthy", "mongo_ping": "ok", "k8s_api": "ok", "metrics_status": "ok"}
+    is_unhealthy = False
+
+    if state.mongo_client:
+        try:
+            t0 = time.time()
+            state.mongo_client.admin.command("ping")
+            status["mongo_ping"] = f"ok ({round((time.time() - t0) * 1000, 1)}ms)"
+        except Exception as e:
+            status["mongo_ping"] = f"failed ({e})"
+            is_unhealthy = True
+    else:
+        status["mongo_ping"] = "not_configured"
+
+    if state.k8s_v1:
+        try:
+            state.k8s_v1.list_namespace(limit=1, _request_timeout=2)
+        except Exception as e:
+            status["k8s_api"] = f"failed ({e})"
+            is_unhealthy = True
+    else:
+        status["k8s_api"] = "not_configured"
+
+    with state.cache_lock:
+        ts = state.metrics_cache["timestamp"]
+
+    now = time.time()
+    if ts > 0:
+        age = now - ts
+        if age > 120:
+            status["metrics_status"] = f"stale (last scraped {round(age)}s ago)"
+            is_unhealthy = True
+        else:
+            status["metrics_status"] = f"fresh ({round(age)}s ago)"
+    else:
+        status["metrics_status"] = "no_data_yet"
+
+    if is_unhealthy:
+        status["status"] = "unhealthy"
+        return jsonify(status), 503
+
+    return jsonify(status), 200

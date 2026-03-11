@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Mongot Ultimate Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+</head>
+<body>
+
+<div class="hdr">
+  <div class="hdr-l">
+    <div>
+      <h1>Mongot Ultimate Monitor</h1>
+      <div class="sub">KUBERNETES &bull; PROMETHEUS &bull; SRE ADVISOR</div>
+    </div>
+  </div>
+  <div class="hdr-r">
+    <select id="rr" onchange="setR()">
+      <option value="3">3s</option>
+      <option value="5" selected>5s</option>
+      <option value="15">15s</option>
+    </select>
+    <span id="pill" class="pill p-ok"><span class="pill-d"></span>OK</span>
+  </div>
+</div>
+
+<div id="err" class="err-b" style="display:none"></div>
+<div class="grid" id="grid"></div>
+
+<script src="{{ url_for('static', filename='js/utils.js') }}"></script>
+<script src="{{ url_for('static', filename='js/logs.js') }}"></script>
+<script src="{{ url_for('static', filename='js/advisor.js') }}"></script>
+<script src="{{ url_for('static', filename='js/pipeline.js') }}"></script>
+<script src="{{ url_for('static', filename='js/render.js') }}"></script>
+
+</body>
+</html>
