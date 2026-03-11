@@ -191,6 +191,78 @@ Expected output: **142 tests, all green**.
 
 ---
 
+## 🐳 Containerized Deployment on Kubernetes
+
+### 1. Build the Docker image
+
+```bash
+docker build -t mongot-monitor:latest .
+```
+
+For a private registry (Docker Hub, ECR, GCR, etc.):
+
+```bash
+docker build -t <your-registry>/mongot-monitor:1.0.0 .
+docker push <your-registry>/mongot-monitor:1.0.0
+```
+
+Update the `image:` field in `k8s/deployment.yaml` accordingly.
+
+### 2. Configure the MongoDB URI
+
+Edit `k8s/secret.yaml` with your connection string:
+
+```yaml
+stringData:
+  MONGODB_URI: "mongodb://user:password@host1:port1,host2:port2/admin?replicaSet=RS&..."
+```
+
+### 3. Apply manifests in order
+
+```bash
+# 1. RBAC (ServiceAccount + ClusterRole + Binding)
+kubectl apply -f k8s/rbac.yaml
+
+# 2. MongoDB URI Secret
+kubectl apply -f k8s/secret.yaml
+
+# 3. Deployment
+kubectl apply -f k8s/deployment.yaml
+
+# 4. Service (NodePort)
+kubectl apply -f k8s/service.yaml
+```
+
+### 4. Access the dashboard
+
+```bash
+# Find the assigned NodePort
+kubectl get svc mongot-monitor -n mongodb
+
+# Open in browser
+http://<NODE_IP>:<NODE_PORT>
+```
+
+Or use a local port-forward:
+
+```bash
+kubectl port-forward svc/mongot-monitor 5050:5050 -n mongodb
+# Then: http://localhost:5050
+```
+
+### Manifest overview
+
+| File | Description |
+|:---|:---|
+| `k8s/rbac.yaml` | ServiceAccount + ClusterRole with minimal permissions |
+| `k8s/secret.yaml` | MongoDB URI as a K8s Secret |
+| `k8s/deployment.yaml` | Deployment with readiness/liveness probes |
+| `k8s/service.yaml` | NodePort Service to expose the dashboard |
+
+> **Namespace**: all manifests default to the `mongodb` namespace. Update the `namespace:` field in all 4 files if yours is different.
+
+---
+
 ## 🔌 API Endpoints
 
 | Endpoint | Method | Description |

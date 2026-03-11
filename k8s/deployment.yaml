@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongot-monitor
+  namespace: mongodb       # change to your namespace
+  labels:
+    app: mongot-monitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongot-monitor
+  template:
+    metadata:
+      labels:
+        app: mongot-monitor
+    spec:
+      serviceAccountName: mongot-monitor
+
+      containers:
+        - name: mongot-monitor
+          image: mongot-monitor:latest   # replace with your registry/image:tag
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - containerPort: 5050
+              name: http
+
+          env:
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mongot-monitor-secret
+                  key: MONGODB_URI
+
+          args:
+            - "--in-cluster"
+            - "--uri"
+            - "$(MONGODB_URI)"
+            - "--namespace"
+            - "mongodb"          # namespace to monitor; remove to watch all namespaces
+            - "--port"
+            - "5050"
+            # Uncomment to enable Basic Auth:
+            # - "--auth"
+            # - "admin:change_me"
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+          readinessProbe:
+            httpGet:
+              path: /healthcheck
+              port: 5050
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /healthcheck
+              port: 5050
+            initialDelaySeconds: 15
+            periodSeconds: 30
+
+      restartPolicy: Always

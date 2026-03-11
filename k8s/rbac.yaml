@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mongot-monitor
+  namespace: mongodb       # change to your namespace
+  labels:
+    app: mongot-monitor
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mongot-monitor
+  labels:
+    app: mongot-monitor
+rules:
+  # Pod discovery, log streaming, Prometheus scraping
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+
+  # Services, PVCs, Events, Namespaces
+  - apiGroups: [""]
+    resources: ["services", "persistentvolumeclaims", "events", "namespaces"]
+    verbs: ["get", "list"]
+
+  # Helm release discovery (secrets labelled owner=helm)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["list"]
+
+  # MCK Operator discovery
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+
+  # MongoDBSearch CRD
+  - apiGroups: ["mongodb.com"]
+    resources: ["mongodbsearch"]
+    verbs: ["get", "list", "watch"]
+
+  # Metrics Server (CPU / memory live)
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mongot-monitor
+  labels:
+    app: mongot-monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mongot-monitor
+subjects:
+  - kind: ServiceAccount
+    name: mongot-monitor
+    namespace: mongodb     # must match ServiceAccount namespace above
