@@ -28,6 +28,41 @@ Durante un Initial Sync o build massivo di un indice, la dashboard mostra un pan
 
 Il pannello è visibile solo quando è attivo un Initial Sync (`initial_sync_in_progress > 0`).
 
+### Milestone 4 — Search Efficiency: Scan Ratio (mongot_query_candidates_examined)
+
+La metrica `mongot_query_candidates_examined` (o `mongot_query_documents_scanned` nelle versioni più recenti di mongot) misura quanti documenti l'indice deve esaminare prima di produrre il risultato finale.
+
+Il rapporto:
+
+```
+scan_ratio = candidates_examined / results_returned
+```
+
+è il vero indicatore di efficienza di una query search. La latency da sola non basta: una query a 50ms con `candidates_examined = 200k` diventerà un timeout non appena il dataset cresce.
+
+**Interpretazione del ratio:**
+
+| Ratio | Interpretazione |
+|:---|:---|
+| < 5 | Eccellente — indice molto selettivo |
+| 5 – 50 | Normale |
+| 50 – 500 | Query inefficiente — indice o analyzer da rivedere |
+| > 500 | Critico — indice o query seriamente problematici |
+
+**Anti-pattern rilevato automaticamente:** se `results_returned = 0` ma `candidates_examined > 0`, la dashboard mostra un warning specifico. Cause tipiche: filtro `$match` post-search troppo restrittivo, scoring threshold troppo alto, pipeline mal progettata.
+
+**Come funziona nel sistema:**
+- Il collector legge il counter cumulativo da Prometheus (con fallback automatico tra i due nomi di metrica)
+- Il Background Collector calcola `scan_ratio` tramite delta tra cicli successivi, esattamente come per QPS
+- Il pannello "🔎 Search Commands" mostra la sezione **"Index Efficiency"** con ratio colorato e label testuale
+- Il **SRE Advisor** aggiunge automaticamente un finding (pass/warn/crit) — il check si attiva solo se la metrica è esposta dalla versione di mongot installata
+
+**Correlazione con latenza:** la vera potenza è nella combinazione:
+- Latency alta + scan ratio basso → problema CPU / IO
+- Latency alta + scan ratio alto → problema indice o query
+
+---
+
 ### Milestone 3 — Search Query Rate e Latenza in tempo reale
 Il pannello **"🔎 Search Commands"** ora mostra metriche di throughput computate tramite delta tra cicli successivi di Prometheus:
 
@@ -44,6 +79,7 @@ I dati di QPS si attivano al secondo ciclo di raccolta (serve un delta temporale
 
 - 🧠 **SRE Advisor Backend**: 12 check automatici sulle Best Practice MongoDB Search (spazio disco 200%, consolidamento indici, I/O, CPU/QPS, OOMKilled, CRD status, storage class, versioning, finestra oplog predittiva, autenticazione mongod↔mongot, TLS mode). La logica è in Python, completamente testabile.
 - 📡 **Search QPS & Latenza Real-Time**: Throughput (`$search`, `$vectorSearch`) e latenza media/massima calcolati in tempo reale dal Background Collector tramite delta di counter Prometheus.
+- 🎯 **Search Efficiency (Scan Ratio)**: Calcola in tempo reale il rapporto `candidates_examined / results_returned` — il vero indicatore di efficienza dell'indice. Anticipa i problemi di scalabilità prima che diventino visibili sulla latency. Rileva automaticamente l'anti-pattern "zero results con candidates esaminati".
 - ⏳ **Index Build ETA**: Pannello live durante initial sync con barra di avanzamento animata, docs/s e countdown ETA. Rileva automaticamente uno stallo del build.
 - 🔍 **Pod Discovery Robusta**: Gerarchia a 4 livelli (label MCK → container name → image → nome pod) per scoperta affidabile in ogni scenario MCK.
 - 🌊 **Atlas Search Sync Pipeline Analyzer**: Visualizza e monitora in tempo reale l'intero flusso dati (`DB → Change Stream → RAM → Lucene`), calcolando il Lag effettivo tra MongoDB e mongot.
