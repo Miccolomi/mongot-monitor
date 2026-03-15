@@ -3,6 +3,7 @@ const $=id=>document.getElementById(id);
 const fB=b=>{if(b==null||b===0)return'—';if(b>1e9)return(b/1e9).toFixed(2)+' GB';if(b>1e6)return(b/1e6).toFixed(1)+' MB';if(b>1e3)return(b/1e3).toFixed(1)+' KB';return b+' B'};
 const fMs=s=>s==null||s===0?'—':s<0.001?'< 1ms':s<1?(s*1000).toFixed(1)+' ms':s.toFixed(3)+' s';
 const fN=n=>n==null?'—':typeof n==='number'?n.toLocaleString('it-IT'):n;
+const fEta=s=>{if(s==null||s<0)return'—';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;return h>0?`${h}h ${m}m`:m>0?`${m}m ${sec}s`:`${sec}s`};
 const row=(l,v)=>`<div class="row"><span class="row-l">${l}</span><span class="row-v">${v}</span></div>`;
 
 function pill(s){

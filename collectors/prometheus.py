@@ -116,6 +116,18 @@ def scrape_mongot_prometheus(pod_name: str, namespace: str, pod_ip: str, port: i
             "initial_sync_in_progress":    g("mongot_initialsync_dispatcher_inProgressSyncs"),
             "initial_sync_queued":         g("mongot_initialsync_dispatcher_queuedSyncs"),
             "change_stream_lag_sec":       g("mongot_index_stats_indexing_replicationLagMs", 0) / 1000.0,
+            # Index build progress — used for ETA calculation
+            # mongot exposes these during initial sync / bulk index build
+            "build_docs_processed": (
+                g("mongot_index_documents_processed") or
+                g("mongot_initialsync_reporter_progress_current") or
+                g("mongot_index_stats_initialSync_totalProcessedDocuments_sum")
+            ),
+            "build_docs_total": (
+                g("mongot_index_documents_total") or
+                g("mongot_initialsync_reporter_progress_total") or
+                g("mongot_index_stats_initialSync_totalDocuments_sum")
+            ),
         },
         "lucene_merge": {
             "running_merges":   g("mongot_mergeScheduler_currentlyRunningMerges"),

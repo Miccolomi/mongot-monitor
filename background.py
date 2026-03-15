@@ -119,7 +119,38 @@ class BackgroundCollector:
                 if dt > 0 and du >= 0:
                     pod_prom["categories"]["indexing"]["steady_applicable_updates_sec"] = round(du / dt, 1)
 
-            new_scrape[pod_key] = {"time": now, "applicable_updates": curr_updates}
+            # ── Index Build ETA ────────────────────────────────────────────────
+            idx = pod_prom["categories"]["indexing"]
+            processed = idx.get("build_docs_processed", 0) or 0
+            total     = idx.get("build_docs_total", 0) or 0
+            in_prog   = idx.get("initial_sync_in_progress", 0) or 0
+
+            eta_info = {"active": False}
+            if in_prog > 0 and total > 0:
+                progress_pct = round(processed / total * 100, 1) if total else 0
+                last_s   = last_scrape_snapshot.get(pod_key, {})
+                dt_s     = now - last_s.get("time", now)
+                last_proc = last_s.get("build_docs_processed", processed)
+                rate     = round((processed - last_proc) / dt_s, 1) if dt_s > 0 else 0.0
+                remaining = max(0, total - processed)
+                stalled  = (rate < 100 and dt_s >= 30)
+                eta_sec  = round(remaining / rate) if rate >= 100 else None
+                eta_info = {
+                    "active":        True,
+                    "processed":     int(processed),
+                    "total":         int(total),
+                    "progress_pct":  progress_pct,
+                    "docs_per_sec":  rate,
+                    "eta_seconds":   eta_sec,
+                    "stalled":       stalled,
+                }
+
+            idx["eta_info"] = eta_info
+            new_scrape[pod_key] = {
+                "time": now,
+                "applicable_updates": curr_updates,
+                "build_docs_processed": processed,
+            }
             prom_metrics[pod_key] = pod_prom
 
         res["mongot_prometheus"] = prom_metrics

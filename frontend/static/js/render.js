@@ -151,6 +151,27 @@ function render(d) {
     h+=row('Active initial syncs',`<span class="blu">${fN(idx.initial_sync_in_progress)}</span>`);
     h+=`</div>`;
 
+    // Index Build ETA (shown only during active initial sync)
+    const eta = idx.eta_info || {};
+    if (eta.active) {
+        const pct = eta.progress_pct || 0;
+        const barColor = eta.stalled ? '#ff1744' : pct > 75 ? '#00e676' : '#ffab00';
+        const etaLabel = eta.stalled
+            ? '<span style="color:#ff1744;font-weight:700">⚠ INDEX BUILD STALLED (rate &lt; 100 docs/s)</span>'
+            : eta.eta_seconds != null
+                ? `<span style="color:#00e676">ETA: ${fEta(eta.eta_seconds)}</span>`
+                : '<span style="color:#ffab00">Calculating ETA…</span>';
+        h += `<div style="background:#0a0d14;border-radius:8px;padding:12px;border:2px solid ${barColor}44;grid-column:span 3">`;
+        h += `<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:${barColor};margin-bottom:8px">⚙️ Index Build in Progress</div>`;
+        h += `<div style="background:#1a1f2e;border-radius:4px;height:10px;margin-bottom:8px;overflow:hidden">`;
+        h += `<div style="background:${barColor};width:${pct}%;height:100%;border-radius:4px;transition:width .5s"></div></div>`;
+        h += `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">`;
+        h += `<div style="font-size:11px;color:#c9d1e0">${fN(eta.processed)} / ${fN(eta.total)} docs &nbsp;<span style="color:#6b7394">(${pct}%)</span></div>`;
+        h += `<div style="font-size:11px">${etaLabel}</div>`;
+        h += `<div style="font-size:11px;color:#6b7394">${fN(eta.docs_per_sec)} docs/s</div>`;
+        h += `</div></div>`;
+    }
+
     // System Disk
     const diskPct=dsk.data_path_total_bytes>0?((dsk.data_path_total_bytes-dsk.data_path_free_bytes)/dsk.data_path_total_bytes)*100:0;
     h+=`<div style="background:#0a0d14;border-radius:8px;padding:12px;border:1px solid #1a1f2e">`;
