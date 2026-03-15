@@ -1,0 +1,24 @@
+# Optional: Prometheus Operator ServiceMonitor
+# Apply this only if you have the Prometheus Operator installed in your cluster.
+# It exposes mongot-monitor as a standard Prometheus scrape target.
+#
+# Check if Prometheus Operator is installed:
+#   kubectl get crd servicemonitors.monitoring.coreos.com
+#
+# Apply with:
+#   kubectl apply -f k8s/service-monitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mongot-monitor
+  namespace: mongodb       # change to your namespace
+  labels:
+    app: mongot-monitor
+spec:
+  selector:
+    matchLabels:
+      app: mongot-monitor
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

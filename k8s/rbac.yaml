@@ -14,9 +14,9 @@ metadata:
   labels:
     app: mongot-monitor
 rules:
-  # Pod discovery, log streaming, Prometheus scraping
+  # Pod discovery, log streaming, Prometheus scraping (direct + API proxy fallback)
   - apiGroups: [""]
-    resources: ["pods", "pods/log"]
+    resources: ["pods", "pods/log", "pods/proxy"]
     verbs: ["get", "list", "watch"]
 
   # Services, PVCs, Events, Namespaces

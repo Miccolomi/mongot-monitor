@@ -134,11 +134,15 @@ def discover_mongot_pods(errors: list = None) -> list:
             pname = pod.metadata.name.lower()
             labels = pod.metadata.labels or {}
 
+            # Exclude the monitor pod itself
+            if labels.get("app") == "mongot-monitor":
+                continue
+
             is_mongot = (
                 labels.get("app.kubernetes.io/component") == "search" or
                 labels.get("app") == "mongodbsearch" or
-                ("mongot" in pname and "mongod" not in pname) or
-                ("search" in pname and "operator" not in pname)
+                ("mongot" in pname and "mongod" not in pname and "monitor" not in pname) or
+                ("search" in pname and "operator" not in pname and "monitor" not in pname)
             )
 
             if not is_mongot and pod.spec.containers:

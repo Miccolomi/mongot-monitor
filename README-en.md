@@ -216,7 +216,7 @@ kubectl get svc -n <namespace>
 
 ```yaml
 stringData:
-  MONGODB_URI: "mongodb://USER:PASSWORD@<replica-set-name>-svc.<namespace>.svc.cluster.local/admin?replicaSet=<RS-name>&tls=true&tlsAllowInvalidCertificates=true&authSource=admin"
+  MONGODB_URI: "mongodb://USER:PASSWORD@<replica-set-name>-svc.<namespace>.svc.cluster.local/admin?replicaSet=<RS-name>&tls=true&tlsAllowInvalidCertificates=true&authSource=admin&authMechanism=SCRAM-SHA-256"
 ```
 
 #### Scenario B — mongod outside the cluster (Atlas, on-prem, external VM)
@@ -226,14 +226,14 @@ Use the external connection string provided by your MongoDB deployment:
 ```yaml
 # Atlas (SRV):
 stringData:
-  MONGODB_URI: "mongodb+srv://USER:PASSWORD@cluster0.xxxxx.mongodb.net/admin?authSource=admin"
+  MONGODB_URI: "mongodb+srv://USER:PASSWORD@cluster0.xxxxx.mongodb.net/admin?authSource=admin&authMechanism=SCRAM-SHA-256"
 
 # Replica set with DNS-resolvable hostnames:
 stringData:
-  MONGODB_URI: "mongodb://USER:PASSWORD@host1:27017,host2:27017,host3:27017/admin?replicaSet=RS&tls=true&authSource=admin"
+  MONGODB_URI: "mongodb://USER:PASSWORD@host1:27017,host2:27017,host3:27017/admin?replicaSet=RS&tls=true&authSource=admin&authMechanism=SCRAM-SHA-256"
 ```
 
-> If your cluster requires SCRAM-SHA-256, append `&authMechanism=SCRAM-SHA-256` to the URI.
+> `authMechanism=SCRAM-SHA-256` is required by MongoDB 7+ with MCK. Remove it only if you are using MongoDB ≤ 6 with SCRAM-SHA-1 authentication.
 
 ### 3. Apply manifests in order
 
