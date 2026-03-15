@@ -133,25 +133,34 @@ def discover_mongot_pods(errors: list = None) -> list:
         for pod in res.items:
             pname = pod.metadata.name.lower()
             labels = pod.metadata.labels or {}
+            containers = pod.spec.containers or []
 
-            # Exclude the monitor pod itself
+            # Always exclude the monitor pod itself
             if labels.get("app") == "mongot-monitor":
                 continue
 
-            is_mongot = (
-                labels.get("app.kubernetes.io/component") == "search" or
-                labels.get("app") == "mongodbsearch" or
-                ("mongot" in pname and "mongod" not in pname and "monitor" not in pname) or
-                ("search" in pname and "operator" not in pname and "monitor" not in pname)
-            )
+            # 1️⃣ Official MCK label (most reliable, works with scaling + rolling upgrades)
+            if labels.get("app.kubernetes.io/component") == "search":
+                is_mongot = True
 
-            if not is_mongot and pod.spec.containers:
-                for c in pod.spec.containers:
-                    cname = c.name.lower()
-                    img = (c.image or "").lower()
-                    if "mongot" in cname or "mongot" in img or "mongodb-enterprise-search" in img:
-                        is_mongot = True
-                        break
+            # 2️⃣ Fallback: container named exactly "mongot" (stable across versions)
+            elif any(c.name.lower() == "mongot" for c in containers):
+                is_mongot = True
+
+            # 3️⃣ Fallback: container image contains known search image names
+            elif any(
+                "mongodb-enterprise-search" in (c.image or "").lower() or
+                "mongot" in (c.image or "").lower()
+                for c in containers
+            ):
+                is_mongot = True
+
+            # 4️⃣ Last resort: pod name heuristic (fragile, kept as safety net)
+            elif "mongot" in pname and "mongod" not in pname and "monitor" not in pname:
+                is_mongot = True
+
+            else:
+                is_mongot = False
 
             if not is_mongot or pod.metadata.name in found_pods:
                 continue
