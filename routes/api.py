@@ -175,6 +175,24 @@ def search_metrics_v1():
     })
 
 
+# ── Log Intelligence ──────────────────────────────────────────────────────────
+
+@api_bp.route("/api/logs/analyze/<namespace>/<pod_name>")
+def analyze_logs(namespace, pod_name):
+    if not is_valid_k8s_name(namespace) or not is_valid_k8s_name(pod_name):
+        return jsonify({"error": "Invalid namespace or pod name"}), 400
+    if not state.k8s_v1:
+        return jsonify({"error": "K8s API not available"}), 500
+
+    from collectors.log_analyzer import analyze_pod_logs, WINDOW_SECONDS
+    window = request.args.get("window", "24h")
+    if window not in WINDOW_SECONDS:
+        return jsonify({"error": f"Invalid window. Valid values: {list(WINDOW_SECONDS.keys())}"}), 400
+
+    result = analyze_pod_logs(pod_name, namespace, state.k8s_v1, window=window)
+    return jsonify(result)
+
+
 # ── Liveness probe ────────────────────────────────────────────────────────────
 
 @api_bp.route("/healthz")

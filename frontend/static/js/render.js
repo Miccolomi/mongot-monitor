@@ -102,13 +102,23 @@ function render(d) {
         h += `</div>`;
     }
 
-    // Live Logs
+    // Live Logs + Log Intelligence
     const isLogOpen = openLogs.has(p.name);
-    h += `<div style="display:flex;gap:6px;margin-top:10px">
-            <button id="btn-log-${p.name}" class="btn" style="flex:1" onclick="toggleLogs('${p.namespace}', '${p.name}')">${isLogOpen ? '▼ Hide Logs' : '▶ Show Live Pod Logs'}</button>
-            <button onclick="promptDownloadLog('${p.namespace}', '${p.name}')" class="btn" style="padding:6px 12px;background:#1e3a8a;color:#93c5fd;border-radius:4px;display:flex;align-items:center;">⬇️ Download Log (.txt)</button>
+    h += `<div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
+            <button id="btn-log-${p.name}" class="btn" style="flex:1;min-width:140px" onclick="toggleLogs('${p.namespace}', '${p.name}')">${isLogOpen ? '▼ Hide Logs' : '▶ Show Live Pod Logs'}</button>
+            <button onclick="promptDownloadLog('${p.namespace}', '${p.name}')" class="btn" style="padding:6px 12px;background:#1e3a8a;color:#93c5fd;border-radius:4px;">⬇️ Download</button>
+            <div style="display:flex;gap:4px;align-items:center">
+              <select id="win-${p.name}" style="padding:5px 8px;font-size:11px;font-weight:600;border-radius:6px;border:1px solid #7c4dff44;background:#7c4dff18;color:#b388ff;cursor:pointer;font-family:'JetBrains Mono',monospace;outline:none">
+                <option value="1h">Last 1h</option>
+                <option value="24h" selected>Last 24h</option>
+                <option value="7d">Last 7d</option>
+                <option value="30d">Last 30d</option>
+              </select>
+              <button onclick="runLogAnalysis('${p.namespace}','${p.name}')" class="btn" style="background:#7c4dff18;border:1px solid #7c4dff44;color:#b388ff;white-space:nowrap">🔍 Analyze Logs</button>
+            </div>
           </div>`;
     h += `<pre id="log-${p.name}" class="term" style="display:${isLogOpen ? 'block' : 'none'}">${logCache[p.name] || 'Loading...'}</pre>`;
+    h += `<div id="log-analysis-${p.name}" style="display:none;margin-top:10px"></div>`;
 
     if(!prom.available){
       h+=`<div style="margin-top:14px;font-size:11px;color:#ff6b6b">No Prometheus metrics found. Fallbacks (Net, Proxy, Exec) failed.</div></div>`;
