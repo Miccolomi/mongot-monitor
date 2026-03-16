@@ -17,6 +17,8 @@ Progettato per **SRE**, **operatori MongoDB** e **platform engineer** che gestis
 - **Analizza** in real-time l'efficienza delle query search, scan ratio e traversal del grafo HNSW
 - **Avvisa** prima che i problemi diventino outage — oplog window predittivo, cardinality warning, stall detection
 - **SRE Advisor integrato** esegue 15 check automatici a ogni ciclo e ordina i risultati per severità
+- **Diagnosi Automatica** interpreta lo stato del cluster istantaneamente — Health Summary, Warning, Raccomandazioni in un unico pannello
+- **Log Intelligence** analizza automaticamente i log JSON di mongot e rileva errori, failure e problemi di connessione su finestre temporali configurabili
 
 Nessun agent da installare. Nessuna infrastruttura aggiuntiva. Punta il tool al tuo cluster e vai.
 
@@ -32,6 +34,8 @@ Nessun agent da installare. Nessuna infrastruttura aggiuntiva. Punta il tool al 
 - [🏗️ Struttura del Progetto](#️-struttura-del-progetto)
 - [🧪 Esecuzione dei Test](#-esecuzione-dei-test)
 - [🔬 SRE Advisor — Approfondimento](#-sre-advisor--approfondimento)
+- [🩻 Diagnosi Automatica](#-diagnosi-automatica)
+- [🪵 Log Intelligence](#-log-intelligence-1)
 
 ---
 
@@ -50,6 +54,8 @@ Nessun agent da installare. Nessuna infrastruttura aggiuntiva. Punta il tool al 
 - ⚡ **Background Collector & Rate Engine** — thread daemon, risposta API < 1ms dalla cache in memoria, sicuro ai counter reset
 - 🔌 **API Stabile Versionata** — `/api/v1/search_metrics` con schema fisso, sicura per consumer esterni
 - 🔒 **Sicurezza** — Basic Auth opzionale, CSP headers, validazione input K8s, CORS configurabile
+- 🩻 **Diagnosi Automatica** — pannello real-time con Health Summary / Warning / Raccomandazioni; disponibile anche via `/api/diagnose` e `--diagnose` CLI (exit 0/1/2 per pipeline CI/CD)
+- 🪵 **Log Intelligence** — analisi on-demand dei log JSON di mongot con finestra temporale configurabile (1h / 24h / 7d / 30d); rileva OOM, errori TLS/auth, failure di connessione, problemi di indicizzazione
 
 ---
 
@@ -194,6 +200,8 @@ kubectl get svc mongot-monitor -n mongodb
 | `/healthcheck` | Stato dettagliato (MongoDB ping, K8s API, età cache) |
 | `/api/logs/<ns>/<pod>` | Ultimi 50 log del pod |
 | `/api/download_logs/<ns>/<pod>` | Download log (`?time=1h&level=error`) |
+| `/api/diagnose` | Diagnosi strutturata: health, warning, raccomandazioni |
+| `/api/logs/analyze/<ns>/<pod>` | Log Intelligence — analisi pattern (`?window=1h\|24h\|7d\|30d`) |
 
 ---
 
@@ -372,3 +380,96 @@ Endpoint JSON versionato con schema fisso, disaccoppiato dai nomi interni delle 
 ```
 
 Sicuro per consumer esterni (CI perf gate, dashboard Grafana, tool di alerting) — il backend può evolvere senza rompere il contratto API.
+
+---
+
+## 🩻 Diagnosi Automatica
+
+Ad ogni ciclo di raccolta, il motore di diagnosi interpreta lo stato completo del cluster e lo presenta in tre colonne direttamente nella dashboard:
+
+- **Health Summary** — tutti i check passati elencati come `✔`
+- **Warnings & Critical** — check falliti con messaggio di dettaglio
+- **Recommendations** — azioni consigliate derivate da ogni finding
+
+Lo stato di salute (`HEALTHY` / `DEGRADED` / `CRITICAL`) è immediatamente visibile in cima al pannello.
+
+### API
+
+```bash
+GET /api/diagnose
+```
+
+```json
+{
+  "health": "degraded",
+  "summary": { "pass": 12, "warn": 2, "crit": 1 },
+  "critical": [{ "title": "OOMKilled & MMap Risk", "detail": "..." }],
+  "warnings":  [{ "title": "Disk Space (200% Rule)", "detail": "..." }],
+  "healthy":   [{ "title": "CRD Operator Status" }, ...],
+  "recommendations": ["Aumenta il memory limit...", "Controlla lo spazio disco..."]
+}
+```
+
+### CLI
+
+Esegui un singolo ciclo diagnostico e termina — utile in pipeline CI/CD:
+
+```bash
+python3 mongot_monitor.py --diagnose \
+  --uri "mongodb://..." --namespace mongodb
+```
+
+Exit code: `0` = healthy, `1` = degraded, `2` = critical.
+
+---
+
+## 🪵 Log Intelligence
+
+Analisi on-demand dei log JSON di mongot direttamente dalla dashboard. Effettua il parsing del formato strutturato (`{"t":..., "s":..., "n":..., "msg":..., "attr":...}`) e rileva pattern di failure noti.
+
+### Finestra temporale configurabile
+
+| Finestra | Descrizione |
+|:---|:---|
+| `1h` | Ultima ora — triage rapido |
+| `24h` | Ultime 24 ore — default |
+| `7d` | Ultimi 7 giorni — analisi dei trend |
+| `30d` | Ultimi 30 giorni — problemi a lungo termine |
+
+Vengono analizzate al massimo 2.000 righe JSON per richiesta (memory guard).
+
+### Pattern rilevati
+
+| Pattern | Severità | Rilevamento |
+|:---|:---|:---|
+| Out of Memory | 🔴 crit | `OutOfMemoryError` in `msg` o `attr` |
+| Errori & Fatal | 🔴 crit | `s == "ERROR"` o `"FATAL"` |
+| Problemi TLS / Auth | 🔴 crit | `ssl`/`tls`/`auth`/`certificate` in `msg` + ERROR/WARN |
+| Problemi connessione MongoDB | 🟡 warn | classe `org.mongodb.driver` + `Exception`/`Removing server` |
+| Failure indici | 🟡 warn | classe `index`/`lucene` + `fail`/`corrupt`/`invalid` |
+| Replication / Change Stream | 🟡 warn | classe `changestream` + `lag`/`timeout`/`fail` |
+| Initial Sync Activity | 🔵 info | classe `initialsync` |
+| Warning generici | 🟡 warn | `s == "WARN"` |
+
+### API
+
+```bash
+GET /api/logs/analyze/<namespace>/<pod>?window=24h
+```
+
+```json
+{
+  "pod": "my-replica-set-search-0",
+  "window": "24h",
+  "lines_analyzed": 350,
+  "findings": [
+    {
+      "id": "errors",
+      "name": "Errors & Fatals",
+      "severity": "crit",
+      "count": 3,
+      "description": "Trovati log ERROR o FATAL — controlla gli esempi per la root cause.",
+      "examples": ["[2026-03-05T14:09:07] Connection refused — ..."]
+    }
+  ]
+}
