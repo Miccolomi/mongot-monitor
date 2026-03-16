@@ -63,7 +63,12 @@ def _check_disk(pods: list, prom_all: dict) -> Finding:
             worst_pod = p["name"]
 
     if status == "pass":
-        ratio_pct = f"{min_ratio * 100:.0f}%" if min_ratio != float("inf") else "N/A"
+        if min_ratio == float("inf"):
+            ratio_pct = "N/A"
+        elif min_ratio > 10:
+            ratio_pct = ">1000%"
+        else:
+            ratio_pct = f"{min_ratio * 100:.0f}%"
         value = f"All pods have free space > 200% of used size (worst safety ratio: {ratio_pct} on {worst_pod or 'N/A'})."
     else:
         value = " ".join(messages)
