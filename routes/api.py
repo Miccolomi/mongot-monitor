@@ -93,6 +93,76 @@ def metrics():
     return jsonify(data)
 
 
+# ── Stable search metrics API (v1) ───────────────────────────────────────────
+
+@api_bp.route("/api/v1/search_metrics")
+def search_metrics_v1():
+    """
+    Stable, versioned JSON API for search performance data.
+    Schema is decoupled from internal metric names — safe to consume
+    from external tools, dashboards, or CI performance gates.
+    """
+    with state.cache_lock:
+        data = state.metrics_cache["data"]
+
+    if data is None:
+        return jsonify({"error": "Collector starting, no data yet"}), 503
+
+    pods_out = {}
+    prom_all = data.get("mongot_prometheus") or {}
+
+    for pod in (data.get("mongot_pods") or []):
+        name  = pod["name"]
+        cats  = (prom_all.get(name) or {}).get("categories", {})
+        sc    = cats.get("search_commands", {})
+        idx   = cats.get("indexing", {})
+        eta   = idx.get("eta_info", {})
+
+        pods_out[name] = {
+            "pod": {
+                "namespace":      pod.get("namespace"),
+                "node":           pod.get("node"),
+                "phase":          pod.get("phase"),
+                "all_ready":      pod.get("all_ready"),
+                "total_restarts": pod.get("total_restarts"),
+            },
+            "qps": {
+                "search":       sc.get("search_qps", 0.0),
+                "vectorsearch": sc.get("vectorsearch_qps", 0.0),
+            },
+            "latency_sec": {
+                "search_avg":       sc.get("search_avg_latency_sec", 0.0),
+                "search_max":       sc.get("search_latency_sec", 0.0),
+                "vectorsearch_avg": sc.get("vectorsearch_avg_latency_sec", 0.0),
+                "vectorsearch_max": sc.get("vectorsearch_latency_sec", 0.0),
+            },
+            "failures": {
+                "search":       sc.get("search_failures", 0),
+                "vectorsearch": sc.get("vectorsearch_failures", 0),
+            },
+            "efficiency": {
+                "search_scan_ratio":              sc.get("scan_ratio", 0.0),
+                "vectorsearch_scan_ratio":        sc.get("vector_scan_ratio", 0.0),
+                "hnsw_visited_nodes":             sc.get("hnsw_visited_nodes", 0.0),
+                "zero_results_with_candidates":   sc.get("zero_results_with_candidates", False),
+            },
+            "indexing": {
+                "replication_lag_sec":    idx.get("change_stream_lag_sec", 0.0),
+                "initial_sync_active":    (idx.get("initial_sync_in_progress", 0) or 0) > 0,
+                "updates_per_sec":        idx.get("steady_applicable_updates_sec", 0.0),
+                "unexpected_failures":    idx.get("steady_unexpected_failures", 0),
+                "eta":                    eta if eta.get("active") else None,
+            },
+        }
+
+    return jsonify({
+        "schema_version": "1",
+        "timestamp":      data.get("timestamp"),
+        "collect_ms":     data.get("_collect_ms"),
+        "pods":           pods_out,
+    })
+
+
 # ── Liveness probe ────────────────────────────────────────────────────────────
 
 @api_bp.route("/healthz")

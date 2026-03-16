@@ -21,6 +21,7 @@ from collectors.mongodb import (
     get_search_perf_from_profiler, get_search_server_params,
 )
 from collectors.prometheus import scrape_mongot_prometheus
+from engine.rate_calculator import compute_pod_rates
 
 log = logging.getLogger("mongot-monitor.collector")
 
@@ -107,98 +108,10 @@ class BackgroundCollector:
                 p["name"], p["namespace"], p.get("pod_ip", "127.0.0.1"), pod_port, global_errors
             )
 
-            pod_key = p["name"]
-            pod_prom.setdefault("categories", {}).setdefault("indexing", {})
-            curr_updates = pod_prom["categories"]["indexing"].get("steady_applicable_updates", 0)
-            pod_prom["categories"]["indexing"]["steady_applicable_updates_sec"] = 0.0
+            pod_key  = p["name"]
+            last_s   = last_scrape_snapshot.get(pod_key)  # None on first cycle → safe
 
-            last_s = last_scrape_snapshot.get(pod_key)
-            if last_s:
-                dt = now - last_s["time"]
-                du = curr_updates - last_s["applicable_updates"]
-                if dt > 0 and du >= 0:
-                    pod_prom["categories"]["indexing"]["steady_applicable_updates_sec"] = round(du / dt, 1)
-
-                # ── Search QPS + avg latency ───────────────────────────────────
-                sc = pod_prom["categories"].setdefault("search_commands", {})
-                if dt > 0:
-                    d_search  = sc.get("search_total", 0) - last_s.get("search_total", sc.get("search_total", 0))
-                    d_vs      = sc.get("vectorsearch_total", 0) - last_s.get("vectorsearch_total", sc.get("vectorsearch_total", 0))
-                    d_sl_sum  = sc.get("search_latency_sum", 0) - last_s.get("search_latency_sum", sc.get("search_latency_sum", 0))
-                    d_vsl_sum = sc.get("vectorsearch_latency_sum", 0) - last_s.get("vectorsearch_latency_sum", sc.get("vectorsearch_latency_sum", 0))
-
-                    if d_search >= 0:
-                        sc["search_qps"] = round(d_search / dt, 2)
-                        if d_search > 0 and d_sl_sum >= 0:
-                            sc["search_avg_latency_sec"] = round(d_sl_sum / d_search, 4)
-                    if d_vs >= 0:
-                        sc["vectorsearch_qps"] = round(d_vs / dt, 2)
-                        if d_vs > 0 and d_vsl_sum >= 0:
-                            sc["vectorsearch_avg_latency_sec"] = round(d_vsl_sum / d_vs, 4)
-
-                    # ── Scan ratio (text search efficiency) ───────────────────
-                    d_cands = sc.get("candidates_examined", 0) - last_s.get("candidates_examined", sc.get("candidates_examined", 0))
-                    d_res   = sc.get("results_returned", 0)   - last_s.get("results_returned",   sc.get("results_returned", 0))
-                    if d_cands >= 0:
-                        sc["zero_results_with_candidates"] = (d_res == 0 and d_cands > 0)
-                        # Skip EMA update if too few results — ratio is noisy at low traffic
-                        if d_res >= 10:
-                            raw_ratio = d_cands / d_res
-                            prev_ema  = last_s.get("scan_ratio_ema", raw_ratio)
-                            ema       = round(0.3 * raw_ratio + 0.7 * prev_ema, 1)
-                            sc["scan_ratio"] = ema
-
-                    # ── Vector scan ratio (vectorSearch efficiency) ────────────
-                    d_vcands = sc.get("vector_candidates_examined", 0) - last_s.get("vector_candidates_examined", sc.get("vector_candidates_examined", 0))
-                    d_vres   = sc.get("vector_results_returned", 0)   - last_s.get("vector_results_returned",   sc.get("vector_results_returned", 0))
-                    if d_vcands >= 0 and d_vres >= 10:
-                        raw_vratio  = d_vcands / d_vres
-                        prev_vema   = last_s.get("vector_scan_ratio_ema", raw_vratio)
-                        sc["vector_scan_ratio"] = round(0.3 * raw_vratio + 0.7 * prev_vema, 1)
-
-            # ── Index Build ETA ────────────────────────────────────────────────
-            idx = pod_prom["categories"]["indexing"]
-            processed = idx.get("build_docs_processed", 0) or 0
-            total     = idx.get("build_docs_total", 0) or 0
-            in_prog   = idx.get("initial_sync_in_progress", 0) or 0
-
-            eta_info = {"active": False}
-            if in_prog > 0 and total > 0:
-                progress_pct = round(processed / total * 100, 1) if total else 0
-                last_s   = last_scrape_snapshot.get(pod_key, {})
-                dt_s     = now - last_s.get("time", now)
-                last_proc = last_s.get("build_docs_processed", processed)
-                rate     = round((processed - last_proc) / dt_s, 1) if dt_s > 0 else 0.0
-                remaining = max(0, total - processed)
-                stalled  = (rate < 100 and dt_s >= 30)
-                eta_sec  = round(remaining / rate) if rate >= 100 else None
-                eta_info = {
-                    "active":        True,
-                    "processed":     int(processed),
-                    "total":         int(total),
-                    "progress_pct":  progress_pct,
-                    "docs_per_sec":  rate,
-                    "eta_seconds":   eta_sec,
-                    "stalled":       stalled,
-                }
-
-            idx["eta_info"] = eta_info
-            sc_snap = pod_prom["categories"].get("search_commands", {})
-            new_scrape[pod_key] = {
-                "time": now,
-                "applicable_updates": curr_updates,
-                "build_docs_processed": processed,
-                "search_total":             sc_snap.get("search_total", 0),
-                "search_latency_sum":       sc_snap.get("search_latency_sum", 0),
-                "vectorsearch_total":       sc_snap.get("vectorsearch_total", 0),
-                "vectorsearch_latency_sum": sc_snap.get("vectorsearch_latency_sum", 0),
-                "candidates_examined":         sc_snap.get("candidates_examined", 0),
-                "results_returned":           sc_snap.get("results_returned", 0),
-                "scan_ratio_ema":             sc_snap.get("scan_ratio", 0.0),
-                "vector_candidates_examined": sc_snap.get("vector_candidates_examined", 0),
-                "vector_results_returned":    sc_snap.get("vector_results_returned", 0),
-                "vector_scan_ratio_ema":      sc_snap.get("vector_scan_ratio", 0.0),
-            }
+            pod_prom, new_scrape[pod_key] = compute_pod_rates(pod_key, pod_prom, last_s, now)
             prom_metrics[pod_key] = pod_prom
 
         res["mongot_prometheus"] = prom_metrics
