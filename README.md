@@ -115,9 +115,39 @@ Terminale live integrato per visualizzare i log di `mongot` e dell'Operator in s
 
 Scraping delle metriche dai pod tramite accesso di rete diretto (HTTP) con fallback automatico sul tunnel K8s API Server Proxy — nessuna configurazione aggiuntiva richiesta.
 
-### ⚡ Background Collector
+### ⚡ Background Collector & Rate Engine
 
 La raccolta dati avviene su un thread daemon separato a intervallo configurabile. L'endpoint `/metrics` risponde sempre in < 1ms dalla cache in memoria — la dashboard non blocca mai su chiamate esterne.
+
+Tutta la logica di calcolo delta/rate è isolata nel modulo `engine/rate_calculator.py`, separato dal loop di raccolta. Questo significa:
+
+- **`background.py`** è un thin orchestrator: scrape → `compute_pod_rates()` → aggiornamento cache
+- **`engine/rate_calculator.py`** contiene QPS, latenza media, scan ratio EMA, HNSW, ETA — testabile indipendentemente
+- **Counter reset safety**: `_safe_delta()` restituisce `None` su delta negativo (reset contatori dopo restart del pod mongot); spike guard scarta QPS > 50.000/s (counter reset dove il nuovo valore è > snapshot precedente); primo ciclo (`last_s=None`) salta tutto silenziosamente — nessun falso spike all'avvio
+
+### 🔌 API Stabile (`/api/v1/search_metrics`)
+
+Endpoint JSON versionato con schema fisso, disaccoppiato dai nomi interni delle metriche Prometheus:
+
+```json
+{
+  "schema_version": "1",
+  "timestamp": "...",
+  "collect_ms": 42,
+  "pods": {
+    "mongot-pod-0": {
+      "pod":        { "namespace", "node", "phase", "all_ready", "total_restarts" },
+      "qps":        { "search": 1.5, "vectorsearch": 0.3 },
+      "latency_sec":{ "search_avg", "search_max", "vectorsearch_avg", "vectorsearch_max" },
+      "failures":   { "search": 0, "vectorsearch": 0 },
+      "efficiency": { "search_scan_ratio", "vectorsearch_scan_ratio", "hnsw_visited_nodes", "zero_results_with_candidates" },
+      "indexing":   { "replication_lag_sec", "initial_sync_active", "updates_per_sec", "eta" }
+    }
+  }
+}
+```
+
+Sicuro per consumer esterni (CI perf gate, dashboard Grafana, tool di alerting) — il backend può evolvere senza rompere il contratto API.
 
 ### 🔒 Sicurezza
 
@@ -238,10 +268,14 @@ I finding sono ordinati per severità (crit → warn → pass) e serviti tramite
 
 ```
 mongot_monitor.py        # App Factory + CLI entry point
-background.py            # BackgroundCollector (thread daemon)
-advisor.py               # SRE Advisor engine (9 check, Python puro)
+background.py            # BackgroundCollector (thin orchestrator, thread daemon)
+advisor.py               # SRE Advisor engine (15 check, Python puro)
 security.py              # Validazione input, security headers, Basic Auth
 state.py                 # Shared mutable state (clients, cache, lock)
+
+engine/
+  rate_calculator.py     # Delta/rate engine: QPS, latenza, scan ratio EMA, HNSW, ETA
+                         # Counter reset safety, spike guard, first-cycle protection
 
 collectors/
   kubernetes.py          # Discovery K8s (pod, CRD, PVC, services, helm)
@@ -249,7 +283,7 @@ collectors/
   prometheus.py          # Prometheus scraper con doppio fallback
 
 routes/
-  api.py                 # Blueprint API (/metrics, /healthcheck, /api/advisor, /api/logs)
+  api.py                 # Blueprint API (/metrics, /api/v1/search_metrics, /api/advisor, /api/logs)
   frontend.py            # Blueprint frontend (/, /favicon.ico)
 
 frontend/

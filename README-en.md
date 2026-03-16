@@ -115,9 +115,39 @@ Built-in live terminal to stream `mongot` and Operator pod logs. Full log archiv
 
 Metrics scraping via direct HTTP access to pods with automatic fallback to the K8s API Server Proxy tunnel — no extra configuration required.
 
-### ⚡ Background Collector
+### ⚡ Background Collector & Rate Engine
 
 Data collection runs on a separate daemon thread at a configurable interval. The `/metrics` endpoint always responds in < 1ms from the in-memory cache — the dashboard never blocks on external calls.
+
+All delta/rate computation logic is isolated in `engine/rate_calculator.py`, separated from the collection loop:
+
+- **`background.py`** is a thin orchestrator: scrape → `compute_pod_rates()` → cache update
+- **`engine/rate_calculator.py`** contains QPS, average latency, scan ratio EMA, HNSW, ETA — independently testable
+- **Counter reset safety**: `_safe_delta()` returns `None` on negative delta (counter reset after mongot pod restart); spike guard discards QPS > 50,000/s (counter reset where new value exceeds old snapshot); first cycle (`last_s=None`) skips all computation silently — no spurious spikes on startup
+
+### 🔌 Stable API (`/api/v1/search_metrics`)
+
+Versioned JSON endpoint with a fixed schema, decoupled from internal Prometheus metric names:
+
+```json
+{
+  "schema_version": "1",
+  "timestamp": "...",
+  "collect_ms": 42,
+  "pods": {
+    "mongot-pod-0": {
+      "pod":        { "namespace", "node", "phase", "all_ready", "total_restarts" },
+      "qps":        { "search": 1.5, "vectorsearch": 0.3 },
+      "latency_sec":{ "search_avg", "search_max", "vectorsearch_avg", "vectorsearch_max" },
+      "failures":   { "search": 0, "vectorsearch": 0 },
+      "efficiency": { "search_scan_ratio", "vectorsearch_scan_ratio", "hnsw_visited_nodes", "zero_results_with_candidates" },
+      "indexing":   { "replication_lag_sec", "initial_sync_active", "updates_per_sec", "eta" }
+    }
+  }
+}
+```
+
+Safe for external consumers (CI performance gates, Grafana dashboards, alerting tools) — the backend can evolve without breaking the API contract.
 
 ### 🔒 Security
 
@@ -238,10 +268,14 @@ Findings are sorted by severity (crit → warn → pass) and served via the `/ap
 
 ```
 mongot_monitor.py        # App Factory + CLI entry point
-background.py            # BackgroundCollector (daemon thread)
-advisor.py               # SRE Advisor engine (9 checks, pure Python)
+background.py            # BackgroundCollector (thin orchestrator, daemon thread)
+advisor.py               # SRE Advisor engine (15 checks, pure Python)
 security.py              # Input validation, security headers, Basic Auth
 state.py                 # Shared mutable state (clients, cache, lock)
+
+engine/
+  rate_calculator.py     # Delta/rate engine: QPS, latency, scan ratio EMA, HNSW, ETA
+                         # Counter reset safety, spike guard, first-cycle protection
 
 collectors/
   kubernetes.py          # K8s discovery (pods, CRDs, PVCs, services, helm)
@@ -249,7 +283,7 @@ collectors/
   prometheus.py          # Prometheus scraper with dual fallback
 
 routes/
-  api.py                 # API Blueprint (/metrics, /healthcheck, /api/advisor, /api/logs)
+  api.py                 # API Blueprint (/metrics, /api/v1/search_metrics, /api/advisor, /api/logs)
   frontend.py            # Frontend Blueprint (/, /favicon.ico)
 
 frontend/
