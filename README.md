@@ -1,4 +1,4 @@
-# 🚀 Mongot Ultimate Monitor
+# 🔬 MongoDB Search Diagnostics
 
 Un cruscotto Enterprise avanzato e standalone per il monitoraggio dei nodi di ricerca MongoDB Search (`mongot`) deployati su Kubernetes tramite il MongoDB Kubernetes Operator (CRD `MongoDBSearch`).
 
@@ -27,6 +27,46 @@ Durante un Initial Sync o build massivo di un indice, la dashboard mostra un pan
 - **ETA dinamica** (`fEta()` — formato h/m/s) oppure warning **"INDEX BUILD STALLED"** se la velocità scende sotto 100 docs/s per almeno 30 secondi
 
 Il pannello è visibile solo quando è attivo un Initial Sync (`initial_sync_in_progress > 0`).
+
+### Milestone 5 — Vector Search: HNSW Visited Nodes + EMA Scan Ratio
+
+**EMA e guard sul traffico basso (anti-rumore)**
+
+Il scan ratio grezzo è rumoroso con traffico basso: `1 risultato / 500 candidati` da una singola query genera un ratio di 500 che è un falso positivo. Soluzioni implementate:
+
+- **Guard `Δresults < 10`**: se il delta di risultati nell'intervallo è inferiore a 10, l'EMA non viene aggiornata — il valore precedente viene mantenuto
+- **EMA (Exponential Moving Average)** con α = 0.3: `ema = 0.3 × ratio_corrente + 0.7 × ema_precedente`. Questo smorza i picchi isolati e riflette la tendenza sostenuta nel tempo
+
+**Vector Scan Ratio separato**
+
+Oltre al ratio per `$search`, viene calcolato un ratio dedicato per `$vectorSearch` tramite:
+
+- `mongot_vector_query_candidates_examined_total`
+- `mongot_vector_query_results_returned_total`
+
+Il `vector_scan_ratio` è particolarmente rilevante per individuare degrado ANN (Approximate Nearest Neighbor) causato da `efSearch` troppo alto, scarsa connettività del grafo HNSW, o embedding di dimensioni eccessive.
+
+**HNSW Visited Nodes — la metrica più sottovalutata**
+
+`mongot_vector_search_hnsw_visited_nodes` (fallback: `mongot_vector_search_graph_nodes_visited`) misura quanti nodi del grafo HNSW vengono attraversati per ogni query vectorSearch.
+
+| Visited nodes | Interpretazione |
+|:---|:---|
+| < 200 | Eccellente |
+| 200 – 1000 | Normale |
+| > 1000 | Query costosa |
+| > 5000 | ANN inefficiente — rischio saturazione CPU |
+
+Questa metrica è un **early warning per la saturazione CPU**: il carico aumenta prima ancora che la latency sia visibile. È usata internamente da MongoDB per diagnosticare problemi nei cluster con embedding search di grandi dimensioni.
+
+**Cardinality problem detection (predittivo)**
+
+Se `scan_ratio > 50` ma `latency < 100ms`, l'SRE Advisor emette un warning predittivo:
+> "High scan ratio but low latency — index is non-selective, may degrade as dataset grows"
+
+Questo è un segnale che Ops Manager non fornisce.
+
+---
 
 ### Milestone 4 — Search Efficiency: Scan Ratio (mongot_query_candidates_examined)
 
@@ -79,7 +119,8 @@ I dati di QPS si attivano al secondo ciclo di raccolta (serve un delta temporale
 
 - 🧠 **SRE Advisor Backend**: 12 check automatici sulle Best Practice MongoDB Search (spazio disco 200%, consolidamento indici, I/O, CPU/QPS, OOMKilled, CRD status, storage class, versioning, finestra oplog predittiva, autenticazione mongod↔mongot, TLS mode). La logica è in Python, completamente testabile.
 - 📡 **Search QPS & Latenza Real-Time**: Throughput (`$search`, `$vectorSearch`) e latenza media/massima calcolati in tempo reale dal Background Collector tramite delta di counter Prometheus.
-- 🎯 **Search Efficiency (Scan Ratio)**: Calcola in tempo reale il rapporto `candidates_examined / results_returned` — il vero indicatore di efficienza dell'indice. Anticipa i problemi di scalabilità prima che diventino visibili sulla latency. Rileva automaticamente l'anti-pattern "zero results con candidates esaminati".
+- 🎯 **Search Efficiency (Scan Ratio EMA)**: Calcola in tempo reale il rapporto `candidates_examined / results_returned` (EMA-smoothed, guard anti-rumore su traffico basso) — il vero indicatore di efficienza dell'indice. Ratio separato per `$search` e `$vectorSearch`. Rileva automaticamente l'anti-pattern "zero results con candidates esaminati" e il "cardinality problem" predittivo (ratio alto + latency bassa).
+- 🧬 **HNSW Visited Nodes**: Early warning per saturazione CPU su vectorSearch — misura il numero di nodi attraversati nel grafo HNSW per query. Individua il degrado ANN verso brute-force prima che la latency sia visibile.
 - ⏳ **Index Build ETA**: Pannello live durante initial sync con barra di avanzamento animata, docs/s e countdown ETA. Rileva automaticamente uno stallo del build.
 - 🔍 **Pod Discovery Robusta**: Gerarchia a 4 livelli (label MCK → container name → image → nome pod) per scoperta affidabile in ogni scenario MCK.
 - 🌊 **Atlas Search Sync Pipeline Analyzer**: Visualizza e monitora in tempo reale l'intero flusso dati (`DB → Change Stream → RAM → Lucene`), calcolando il Lag effettivo tra MongoDB e mongot.

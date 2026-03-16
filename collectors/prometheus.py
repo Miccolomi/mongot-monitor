@@ -81,19 +81,31 @@ def scrape_mongot_prometheus(pod_name: str, namespace: str, pod_ip: str, port: i
             # Failures (cumulative)
             "search_failures":             g("mongot_command_searchCommandFailure_total"),
             "vectorsearch_failures":       g("mongot_command_vectorSearchCommandFailure_total"),
-            # Candidates examined / results returned (for scan ratio)
+            # Candidates examined / results returned (text search scan ratio)
             # Metric name varies by mongot version — try both
             "candidates_examined": (
                 g("mongot_query_candidates_examined_total") or
                 g("mongot_query_documents_scanned")
             ),
-            "results_returned":    g("mongot_query_results_returned_total"),
+            "results_returned":        g("mongot_query_results_returned_total"),
+            # Vector search candidates / results (separate ratio)
+            "vector_candidates_examined": (
+                g("mongot_vector_query_candidates_examined_total") or 0
+            ),
+            "vector_results_returned": g("mongot_vector_query_results_returned_total"),
+            # HNSW graph traversal — ANN efficiency proxy
+            # High values → ANN degenerating toward brute-force
+            "hnsw_visited_nodes": (
+                g("mongot_vector_search_hnsw_visited_nodes") or
+                g("mongot_vector_search_graph_nodes_visited")
+            ),
             # Rates — computed by background collector, seeded to 0 here
             "search_qps":           0.0,
             "search_avg_latency_sec": 0.0,
             "vectorsearch_qps":     0.0,
             "vectorsearch_avg_latency_sec": 0.0,
             "scan_ratio":           0.0,
+            "vector_scan_ratio":    0.0,
             "zero_results_with_candidates": False,
         },
         "jvm": {

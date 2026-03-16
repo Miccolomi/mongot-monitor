@@ -349,69 +349,155 @@ def _check_search_tls(server_params: dict) -> Finding | None:
 
 
 def _check_scan_ratio(pods: list, prom_all: dict) -> Finding | None:
-    """Check query candidate scan ratio — proxy for search index efficiency."""
+    """Check query candidate scan ratio (EMA-smoothed) — proxy for text search index efficiency."""
     worst_ratio = 0.0
     worst_pod = ""
     zero_results_pods = []
+    cardinality_pods = []
 
     for p in pods:
         sc = (prom_all.get(p["name"]) or {}).get("categories", {}).get("search_commands", {})
         ratio = sc.get("scan_ratio", 0.0)
+        latency = sc.get("search_avg_latency_sec", 0.0)
         zero_anti = sc.get("zero_results_with_candidates", False)
 
         if zero_anti:
             zero_results_pods.append(p["name"])
 
+        # Cardinality problem: high ratio but still low latency — predictive signal
+        if ratio > 50 and 0 < latency < 0.1:
+            cardinality_pods.append((p["name"], ratio, latency))
+
         if ratio > worst_ratio:
             worst_ratio = ratio
             worst_pod = p["name"]
 
-    # Anti-pattern takes priority: candidates scanned but zero results returned
+    # Anti-pattern: candidates scanned, zero results
     if zero_results_pods:
         pods_str = ", ".join(zero_results_pods)
         return _finding(
-            "scan_ratio",
-            "Search Efficiency (Scan Ratio)",
-            "warn",
+            "scan_ratio", "Search Efficiency (Scan Ratio)", "warn",
             f"Zero results returned while candidates were examined on: {pods_str}. "
-            "Possible causes: $match post-search filter too restrictive, scoring threshold too high, or pipeline misconfiguration.",
-            "A high scan ratio or zero results with candidates examined indicates an inefficient query or misconfigured index. "
+            "Possible causes: post-search $match too restrictive, scoring threshold too high, or misconfigured pipeline.",
+            "This pattern often means a pipeline stage is filtering out all search results after retrieval. "
             "Review the search query pipeline and index field mappings.",
         )
 
     if worst_ratio == 0.0:
-        return None  # No data yet (first cycle or metric not exposed by this mongot version)
+        return None  # No data yet — metric not exposed or first cycle
+
+    # Cardinality problem: predictive signal before latency degrades
+    if cardinality_pods:
+        pod_name, ratio, latency = cardinality_pods[0]
+        return _finding(
+            "scan_ratio", "Search Efficiency (Scan Ratio)", "warn",
+            f"High scan ratio ({ratio:.0f}:1) but low latency ({latency * 1000:.0f}ms) on {pod_name}. "
+            "Index is non-selective — latency appears acceptable now but will degrade as the dataset grows.",
+            "This is a predictive signal: the index must scan many candidates per result, "
+            "but the dataset is still small enough to hide the cost. "
+            "Review analyzer, field mappings, and query specificity before scaling data.",
+        )
 
     if worst_ratio > 500:
         return _finding(
-            "scan_ratio",
-            "Search Efficiency (Scan Ratio)",
-            "crit",
-            f"Scan ratio {worst_ratio:.0f}:1 on pod {worst_pod}. "
-            "mongot is scanning an extreme number of candidates per result — index or query is seriously problematic. "
-            "This will degrade severely as the dataset grows.",
-            "Scan ratio = candidates_examined / results_returned. "
-            "< 5 is excellent, 5–50 is normal, 50–500 is inefficient, > 500 is critical. "
+            "scan_ratio", "Search Efficiency (Scan Ratio)", "crit",
+            f"Scan ratio {worst_ratio:.0f}:1 on {worst_pod}. "
+            "Index or query is seriously problematic — will degrade severely as dataset grows.",
+            "Scan ratio (EMA-smoothed) = candidates_examined / results_returned. "
+            "< 5 excellent, 5–50 normal, 50–500 inefficient, > 500 critical. "
             "Review index analyzer, field mappings, and query specificity.",
         )
     if worst_ratio > 50:
         return _finding(
-            "scan_ratio",
-            "Search Efficiency (Scan Ratio)",
-            "warn",
-            f"Scan ratio {worst_ratio:.0f}:1 on pod {worst_pod} — query is inefficient. "
-            "The index must examine many candidates to produce each result. "
-            "Latency will worsen as the dataset grows even if it appears acceptable now.",
-            "Scan ratio = candidates_examined / results_returned. "
-            "< 5 is excellent, 5–50 is normal, > 50 is inefficient. "
-            "Review analyzer configuration and query specificity.",
+            "scan_ratio", "Search Efficiency (Scan Ratio)", "warn",
+            f"Scan ratio {worst_ratio:.0f}:1 on {worst_pod} — query is inefficient. "
+            "Latency will worsen as the dataset grows.",
+            "Scan ratio (EMA-smoothed) = candidates_examined / results_returned. "
+            "< 5 excellent, 5–50 normal, > 50 inefficient. Review analyzer and query specificity.",
         )
     return _finding(
-        "scan_ratio",
-        "Search Efficiency (Scan Ratio)",
-        "pass",
-        f"Scan ratio {worst_ratio:.1f}:1 — index is selective and queries are efficient.",
+        "scan_ratio", "Search Efficiency (Scan Ratio)", "pass",
+        f"Scan ratio {worst_ratio:.1f}:1 (EMA) — index is selective, queries are efficient.",
         "Scan ratio = candidates_examined / results_returned. < 5 is excellent, 5–50 is normal.",
+    )
+
+
+def _check_vector_scan_ratio(pods: list, prom_all: dict) -> Finding | None:
+    """Check vectorSearch candidate scan ratio — proxy for ANN index quality."""
+    worst_ratio = 0.0
+    worst_pod = ""
+
+    for p in pods:
+        sc = (prom_all.get(p["name"]) or {}).get("categories", {}).get("search_commands", {})
+        ratio = sc.get("vector_scan_ratio", 0.0)
+        if ratio > worst_ratio:
+            worst_ratio = ratio
+            worst_pod = p["name"]
+
+    if worst_ratio == 0.0:
+        return None  # Metric not available on this mongot version
+
+    if worst_ratio > 500:
+        return _finding(
+            "vector_scan_ratio", "Vector Search Efficiency (Scan Ratio)", "crit",
+            f"Vector scan ratio {worst_ratio:.0f}:1 on {worst_pod}. "
+            "ANN is degenerating toward brute-force — likely caused by high efSearch, "
+            "poor graph connectivity, or oversized embedding dimensions.",
+            "Tune efSearch to reduce candidates. Check embedding dimensionality and "
+            "HNSW index parameters (efConstruction, m). Consider quantization for large embeddings.",
+        )
+    if worst_ratio > 50:
+        return _finding(
+            "vector_scan_ratio", "Vector Search Efficiency (Scan Ratio)", "warn",
+            f"Vector scan ratio {worst_ratio:.0f}:1 on {worst_pod} — $vectorSearch is examining "
+            "too many candidates per result. CPU saturation risk as query volume grows.",
+            "Review efSearch parameter and HNSW index configuration. "
+            "Lower efSearch improves speed at the cost of recall accuracy.",
+        )
+    return _finding(
+        "vector_scan_ratio", "Vector Search Efficiency (Scan Ratio)", "pass",
+        f"Vector scan ratio {worst_ratio:.1f}:1 — ANN index is efficient.",
+        "Vector scan ratio = vector_candidates_examined / vector_results_returned.",
+    )
+
+
+def _check_hnsw_nodes(pods: list, prom_all: dict) -> Finding | None:
+    """Check HNSW visited nodes — early warning for ANN CPU saturation."""
+    worst_nodes = 0.0
+    worst_pod = ""
+
+    for p in pods:
+        sc = (prom_all.get(p["name"]) or {}).get("categories", {}).get("search_commands", {})
+        nodes = sc.get("hnsw_visited_nodes", 0.0) or 0.0
+        if nodes > worst_nodes:
+            worst_nodes = nodes
+            worst_pod = p["name"]
+
+    if worst_nodes == 0.0:
+        return None  # Metric not available on this mongot version
+
+    if worst_nodes > 5000:
+        return _finding(
+            "hnsw_nodes", "Vector HNSW Graph Traversal", "crit",
+            f"{worst_nodes:.0f} HNSW nodes visited per query on {worst_pod}. "
+            "ANN search is inefficient — CPU saturation is imminent. "
+            "Reduce efSearch or rebuild the index with better parameters.",
+            "HNSW visited nodes > 5000 means the ANN graph is traversing excessively. "
+            "This directly drives CPU load. Lower efSearch, check embedding size, "
+            "or rebuild the index with higher efConstruction and m values.",
+        )
+    if worst_nodes > 1000:
+        return _finding(
+            "hnsw_nodes", "Vector HNSW Graph Traversal", "warn",
+            f"{worst_nodes:.0f} HNSW nodes visited per query on {worst_pod}. "
+            "Query is costly — monitor CPU closely as traffic increases.",
+            "HNSW visited nodes between 200–1000 is normal. Above 1000 is costly. "
+            "Consider reducing efSearch or optimizing the index.",
+        )
+    return _finding(
+        "hnsw_nodes", "Vector HNSW Graph Traversal", "pass",
+        f"{worst_nodes:.0f} HNSW nodes visited per query — ANN traversal is efficient.",
+        "< 200 excellent, 200–1000 normal, > 1000 costly, > 5000 ANN inefficient.",
     )
 
 
@@ -486,6 +572,8 @@ def run_advisor(snapshot: Snapshot) -> list[Finding]:
         _check_search_tls(server_params),
         _check_oplog_window(oplog_info, pods, prom_all),
         _check_scan_ratio(pods, prom_all),
+        _check_vector_scan_ratio(pods, prom_all),
+        _check_hnsw_nodes(pods, prom_all),
     ):
         if optional:
             findings.append(optional)

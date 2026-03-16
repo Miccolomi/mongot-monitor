@@ -25,7 +25,7 @@ def test_dashboard_content_type_is_html(client):
 
 def test_dashboard_has_page_title(client):
     resp = client.get("/")
-    assert b"Mongot Ultimate Monitor" in resp.data
+    assert b"MongoDB Search Diagnostics" in resp.data
 
 
 def test_dashboard_has_no_inline_style_block(client):

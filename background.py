@@ -136,12 +136,25 @@ class BackgroundCollector:
                         if d_vs > 0 and d_vsl_sum >= 0:
                             sc["vectorsearch_avg_latency_sec"] = round(d_vsl_sum / d_vs, 4)
 
-                    # ── Scan ratio (query efficiency) ──────────────────────────
+                    # ── Scan ratio (text search efficiency) ───────────────────
                     d_cands = sc.get("candidates_examined", 0) - last_s.get("candidates_examined", sc.get("candidates_examined", 0))
                     d_res   = sc.get("results_returned", 0)   - last_s.get("results_returned",   sc.get("results_returned", 0))
                     if d_cands >= 0:
-                        sc["scan_ratio"] = round(d_cands / max(d_res, 1), 1)
                         sc["zero_results_with_candidates"] = (d_res == 0 and d_cands > 0)
+                        # Skip EMA update if too few results — ratio is noisy at low traffic
+                        if d_res >= 10:
+                            raw_ratio = d_cands / d_res
+                            prev_ema  = last_s.get("scan_ratio_ema", raw_ratio)
+                            ema       = round(0.3 * raw_ratio + 0.7 * prev_ema, 1)
+                            sc["scan_ratio"] = ema
+
+                    # ── Vector scan ratio (vectorSearch efficiency) ────────────
+                    d_vcands = sc.get("vector_candidates_examined", 0) - last_s.get("vector_candidates_examined", sc.get("vector_candidates_examined", 0))
+                    d_vres   = sc.get("vector_results_returned", 0)   - last_s.get("vector_results_returned",   sc.get("vector_results_returned", 0))
+                    if d_vcands >= 0 and d_vres >= 10:
+                        raw_vratio  = d_vcands / d_vres
+                        prev_vema   = last_s.get("vector_scan_ratio_ema", raw_vratio)
+                        sc["vector_scan_ratio"] = round(0.3 * raw_vratio + 0.7 * prev_vema, 1)
 
             # ── Index Build ETA ────────────────────────────────────────────────
             idx = pod_prom["categories"]["indexing"]
@@ -179,8 +192,12 @@ class BackgroundCollector:
                 "search_latency_sum":       sc_snap.get("search_latency_sum", 0),
                 "vectorsearch_total":       sc_snap.get("vectorsearch_total", 0),
                 "vectorsearch_latency_sum": sc_snap.get("vectorsearch_latency_sum", 0),
-                "candidates_examined":      sc_snap.get("candidates_examined", 0),
-                "results_returned":         sc_snap.get("results_returned", 0),
+                "candidates_examined":         sc_snap.get("candidates_examined", 0),
+                "results_returned":           sc_snap.get("results_returned", 0),
+                "scan_ratio_ema":             sc_snap.get("scan_ratio", 0.0),
+                "vector_candidates_examined": sc_snap.get("vector_candidates_examined", 0),
+                "vector_results_returned":    sc_snap.get("vector_results_returned", 0),
+                "vector_scan_ratio_ema":      sc_snap.get("vector_scan_ratio", 0.0),
             }
             prom_metrics[pod_key] = pod_prom
 

@@ -1,4 +1,4 @@
-# 🚀 Mongot Ultimate Monitor
+# 🔬 MongoDB Search Diagnostics
 
 An advanced, standalone Enterprise dashboard for monitoring MongoDB Search (`mongot`) nodes deployed on Kubernetes via the MongoDB Kubernetes Operator (`MongoDBSearch` CRD).
 
@@ -27,6 +27,46 @@ During an Initial Sync or a bulk index build, the dashboard shows a dedicated **
 - **Dynamic ETA** (`fEta()` — h/m/s format) or **"INDEX BUILD STALLED"** warning if the rate drops below 100 docs/s for at least 30 seconds
 
 The panel is only visible while an Initial Sync is active (`initial_sync_in_progress > 0`).
+
+### Milestone 5 — Vector Search: HNSW Visited Nodes + EMA Scan Ratio
+
+**EMA and low-traffic noise guard**
+
+The raw scan ratio is noisy under low traffic: `1 result / 500 candidates` from a single query produces a ratio of 500 that is a false positive. Two mechanisms address this:
+
+- **`Δresults < 10` guard**: if the result delta within the interval is below 10, the EMA is not updated — the previous value is preserved
+- **EMA (Exponential Moving Average)** with α = 0.3: `ema = 0.3 × current_ratio + 0.7 × previous_ema`. This dampens isolated spikes and reflects the sustained trend over time
+
+**Separate Vector Scan Ratio**
+
+In addition to the ratio for `$search`, a dedicated ratio is computed for `$vectorSearch` using:
+
+- `mongot_vector_query_candidates_examined_total`
+- `mongot_vector_query_results_returned_total`
+
+The `vector_scan_ratio` is particularly relevant for detecting ANN (Approximate Nearest Neighbor) degradation caused by excessive `efSearch`, poor HNSW graph connectivity, or oversized embedding dimensions.
+
+**HNSW Visited Nodes — the most underrated metric**
+
+`mongot_vector_search_hnsw_visited_nodes` (fallback: `mongot_vector_search_graph_nodes_visited`) measures how many nodes in the HNSW graph are traversed per vectorSearch query.
+
+| Visited nodes | Meaning |
+|:---|:---|
+| < 200 | Excellent |
+| 200 – 1000 | Normal |
+| > 1000 | Costly query |
+| > 5000 | ANN inefficient — CPU saturation risk |
+
+This metric is an **early warning for CPU saturation**: the load increases before latency becomes visible. It is used internally by MongoDB to diagnose problems in clusters with large-scale embedding search.
+
+**Predictive cardinality problem detection**
+
+If `scan_ratio > 50` but `latency < 100ms`, the SRE Advisor emits a predictive warning:
+> "High scan ratio but low latency — index is non-selective, may degrade as dataset grows"
+
+This is the type of insight that Ops Manager does not provide.
+
+---
 
 ### Milestone 4 — Search Efficiency: Scan Ratio (mongot_query_candidates_examined)
 
@@ -79,7 +119,8 @@ QPS data activates from the second collection cycle onward (a time delta is requ
 
 - 🧠 **SRE Advisor Backend**: 12 automated Best Practice checks for MongoDB Search (200% disk rule, index consolidation, I/O bottleneck, CPU/QPS, OOMKilled, CRD status, storage class, versioning, predictive oplog window, mongod↔mongot authentication, TLS mode). Logic lives in Python — fully testable.
 - 📡 **Search QPS & Real-Time Latency**: Throughput (`$search`, `$vectorSearch`) and average/max latency computed in real time by the Background Collector via Prometheus counter deltas.
-- 🎯 **Search Efficiency (Scan Ratio)**: Computes `candidates_examined / results_returned` in real time — the true indicator of index efficiency. Anticipates scalability problems before they appear in latency. Automatically detects the "zero results with candidates examined" anti-pattern.
+- 🎯 **Search Efficiency (Scan Ratio EMA)**: Computes `candidates_examined / results_returned` in real time (EMA-smoothed, low-traffic noise guard) — the true indicator of index efficiency. Separate ratios for `$search` and `$vectorSearch`. Automatically detects the "zero results with candidates" anti-pattern and the predictive "cardinality problem" signal (high ratio + low latency).
+- 🧬 **HNSW Visited Nodes**: Early warning for vectorSearch CPU saturation — measures the number of nodes traversed in the HNSW graph per query. Detects ANN degradation toward brute-force before latency becomes visible.
 - ⏳ **Index Build ETA**: Live panel during initial sync with animated progress bar, docs/sec speed, and ETA countdown. Automatically detects a stalled build.
 - 🔍 **Robust Pod Discovery**: 4-level hierarchy (MCK label → container name → image → pod name) for reliable discovery in every MCK scenario.
 - 🌊 **Atlas Search Sync Pipeline Analyzer**: End-to-end real-time visualization of the active data pipeline (`DB → Change Stream → RAM → Lucene`), computing actual replication lag between MongoDB and mongot.

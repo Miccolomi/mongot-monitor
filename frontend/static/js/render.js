@@ -135,14 +135,29 @@ function render(d) {
     h+=row('$vecSearch fail',`<span class="${sc.vectorsearch_failures>0?'red':'grn'}">${fN(sc.vectorsearch_failures)}</span>`);
     h+=row('getMores latency',`<span class="blu">${fMs(sc.getmores_latency_sec)}</span>`);
     h+=row('manageIndex lat.',`<span class="blu">${fMs(sc.manage_index_latency_sec)}</span>`);
-    // Search Efficiency (scan ratio)
-    const sr = sc.scan_ratio != null ? sc.scan_ratio : null;
-    if (sr != null && sr > 0) {
-        const srColor = sr > 500 ? '#ff1744' : sr > 50 ? '#ffab00' : sr > 5 ? '#00e676' : '#00e676';
-        const srLabel = sr > 500 ? 'CRITICAL' : sr > 50 ? 'Inefficient' : sr > 5 ? 'Normal' : 'Excellent';
+    // Search Efficiency (scan ratio + vector + HNSW)
+    const sr   = sc.scan_ratio        || 0;
+    const vsr  = sc.vector_scan_ratio || 0;
+    const hnsw = sc.hnsw_visited_nodes || 0;
+    const hasEfficiency = sr > 0 || vsr > 0 || hnsw > 0;
+    if (hasEfficiency) {
         h += `<div style="border-top:1px solid #1a1f2e;margin:6px 0 4px"></div>`;
-        h += `<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6b7394;margin-bottom:4px">Index Efficiency</div>`;
-        h += row('Scan ratio', `<span style="color:${srColor};font-weight:700">${sr.toFixed(1)}:1</span> <span style="color:${srColor};font-size:10px">(${srLabel})</span>`);
+        h += `<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6b7394;margin-bottom:4px">Index Efficiency (EMA)</div>`;
+        if (sr > 0) {
+            const srColor = sr > 500 ? '#ff1744' : sr > 50 ? '#ffab00' : '#00e676';
+            const srLabel = sr > 500 ? 'CRITICAL' : sr > 50 ? 'Inefficient' : sr > 5 ? 'Normal' : 'Excellent';
+            h += row('$search scan ratio', `<span style="color:${srColor};font-weight:700">${sr.toFixed(1)}:1</span> <span style="color:${srColor};font-size:10px">(${srLabel})</span>`);
+        }
+        if (vsr > 0) {
+            const vsrColor = vsr > 500 ? '#ff1744' : vsr > 50 ? '#ffab00' : '#00e676';
+            const vsrLabel = vsr > 500 ? 'CRITICAL' : vsr > 50 ? 'Inefficient' : vsr > 5 ? 'Normal' : 'Excellent';
+            h += row('$vectorSearch ratio', `<span style="color:${vsrColor};font-weight:700">${vsr.toFixed(1)}:1</span> <span style="color:${vsrColor};font-size:10px">(${vsrLabel})</span>`);
+        }
+        if (hnsw > 0) {
+            const hnswColor = hnsw > 5000 ? '#ff1744' : hnsw > 1000 ? '#ffab00' : '#00e676';
+            const hnswLabel = hnsw > 5000 ? 'ANN inefficient' : hnsw > 1000 ? 'Costly' : hnsw > 200 ? 'Normal' : 'Excellent';
+            h += row('HNSW visited nodes', `<span style="color:${hnswColor};font-weight:700">${fN(Math.round(hnsw))}</span> <span style="color:${hnswColor};font-size:10px">(${hnswLabel})</span>`);
+        }
         if (sc.zero_results_with_candidates) {
             h += `<div style="font-size:10px;color:#ffab00;margin-top:4px">⚠ Zero results with candidates examined — check post-search $match or scoring threshold</div>`;
         }
