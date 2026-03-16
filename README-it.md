@@ -351,28 +351,3 @@ tests/
 source venv/bin/activate
 python3 -m pytest tests/ -v
 ```
-
-### Struttura manifest
-
-| File | Descrizione |
-|:---|:---|
-| `k8s/rbac.yaml` | ServiceAccount + ClusterRole con permessi minimi |
-| `k8s/secret.yaml` | MongoDB URI come K8s Secret |
-| `k8s/deployment.yaml` | Deployment con probe liveness (`/healthz`) e readiness (`/healthz`) |
-| `k8s/service.yaml` | NodePort per esporre la dashboard |
-
-> **Namespace**: tutti i manifest usano `mongodb` come namespace di default. Modifica il campo `namespace:` in tutti e 4 i file se il tuo namespace è diverso.
-
----
-
-## 🔌 Endpoint API
-
-| Endpoint | Metodo | Descrizione |
-|:---|:---|:---|
-| `/` | GET | Dashboard HTML |
-| `/metrics` | GET | Snapshot completo JSON (dalla cache) |
-| `/api/advisor` | GET | Findings SRE in JSON |
-| `/healthcheck` | GET | Stato di salute del monitor |
-| `/api/logs/<ns>/<pod>` | GET | Ultimi 50 log del pod |
-| `/api/download_logs/<ns>/<pod>` | GET | Download log (parametri `?time=1h&level=error`) |
-
