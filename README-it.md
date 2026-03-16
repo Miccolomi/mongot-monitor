@@ -2,7 +2,7 @@
 
 # 🔬 MongoDB Search Diagnostics
 
-**mongot-monitor è uno strumento open-source di diagnostica per i nodi MongoDB Atlas Search.**
+**mongot-monitor è uno strumento open-source di diagnostica per i nodi MongoDB Search.**
 Rileva automaticamente problemi di performance, lag di indicizzazione e anomalie di configurazione.
 
 Progettato per **SRE**, **operatori MongoDB** e **platform engineer** che gestiscono Atlas Search su Kubernetes.
