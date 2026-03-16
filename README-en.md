@@ -155,112 +155,147 @@ Optional HTTP Basic Auth, security headers (CSP, X-Frame-Options, X-Content-Type
 
 ---
 
-## 📋 Requirements
+## 🚀 Installation & Setup
 
-- **Python 3.9+**
-- Configured Kubernetes access (a valid `~/.kube/config`, or a ServiceAccount if running in-cluster)
-- MongoDB connection string (read access on `local` DB for oplog tracking and on your target collections)
+> **Prerequisites**: `kubectl` configured and pointing to your cluster. A MongoDB connection string with read access on `local` (oplog) and your target collections.
 
 ---
 
-## 🛠️ Installation
+### Mode 1 — Local (Mac / PC)
 
-### 1. Clone the repository
+Use this mode for development, demos, or when you prefer running the monitor outside the cluster.
+
+**1. Clone and install**
 
 ```bash
 git clone https://github.com/Miccolomi/mongot-monitor.git
 cd mongot-monitor
-```
-
-### 2. Create the virtual environment
-
-```bash
 python3 -m venv venv
 source venv/bin/activate
-```
-
-> ⚠️ **Important**: always activate the venv before running the monitor. Your prompt will show `(venv)`.
-
-### 3. Install dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 
----
-
-## 🚀 Usage
-
-### Quick start (Mac / local PC)
-
-If `kubectl` is already configured to point to your cluster, the script will automatically pick up your local Kubeconfig.
+**2. Start**
 
 ```bash
-source venv/bin/activate
-
 python3 mongot_monitor.py \
-  --uri "mongodb://<USER>:<PASSWORD>@<HOST1>:<PORT1>,<HOST2>:<PORT2>/<DB>?replicaSet=<RS>&tls=true&tlsAllowInvalidCertificates=true&authSource=admin" \
+  --uri "mongodb://USER:PASSWORD@HOST:PORT/admin?replicaSet=RS&authSource=admin&authMechanism=SCRAM-SHA-256" \
   --namespace mongodb \
   --port 5050
 ```
 
 Open your browser at: **http://localhost:5050**
 
-### Real-world example
-
-```bash
-python3 mongot_monitor.py \
-  --uri "mongodb://mdb-admin:password@work0.mongodb.local:30017,work1.mongodb.local:30018,work2.mongodb.local:30019/admin?replicaSet=my-replica-set&tls=true&tlsAllowInvalidCertificates=true&authSource=admin" \
-  --namespace mongodb \
-  --port 5051
-```
-
-### With Basic Auth (access protection)
-
-```bash
-python3 mongot_monitor.py \
-  --uri "mongodb://..." \
-  --namespace mongodb \
-  --auth admin:strong_password
-```
-
----
-
-## ⚙️ CLI Parameters
+**CLI options**
 
 | Parameter | Default | Description |
 |:---|:---|:---|
 | `--uri` | — | MongoDB connection string |
-| `--port` | `5050` | HTTP port for the dashboard |
-| `--host` | `0.0.0.0` | Flask binding address |
 | `--namespace` | all | Kubernetes namespace to monitor |
-| `--in-cluster` | `false` | K8s authentication via ServiceAccount |
-| `--interval` | `5` | Background Collector interval (seconds) |
-| `--auth` | — | Enable Basic Auth. Format: `user:password` |
+| `--port` | `5050` | HTTP port for the dashboard |
+| `--interval` | `5` | Collection interval in seconds |
+| `--auth` | — | Basic Auth — format `user:password` |
+| `--in-cluster` | `false` | K8s auth via ServiceAccount (in-cluster only) |
+| `--host` | `0.0.0.0` | Flask binding address |
 | `--allowed-origins` | localhost | CORS allowed origins (space-separated) |
 
 ---
 
-## 🧠 How does the SRE Advisor work?
+### Mode 2 — Kubernetes (in-cluster)
 
-The **Compliance & Best Practices** panel runs 12 Python checks automatically on every collection cycle:
+Use this mode for a permanent deployment inside the cluster. The monitor runs as a pod and uses a ServiceAccount with RBAC to access the Kubernetes API.
 
-| # | Check | Thresholds |
-|:---|:---|:---|
-| 1 | **Disk Space (200% Rule)** | warn if free < 200% of used; crit if disk ≥ 90% (read-only mode) |
-| 2 | **Index Consolidation** | warn if more than one index of the same type on the same collection (vectorSearch + fullText on the same collection is valid: Hybrid Search) |
-| 3 | **I/O Bottleneck** | crit if disk queue > 10 AND lag > 5s simultaneously |
-| 4 | **CPU & QPS** | crit if CPU > 80%; warn if QPS > 10 × cores |
-| 5 | **Memory Starvation (Page Faults)** | warn > 500/s; crit > 1000/s |
-| 6 | **OOMKilled & MMap Risk** | crit if JVM heap ≥ 90% of pod limit or OOMKilled detected |
-| 7 | **CRD Operator Status** | crit if CRD is not in `Running` phase |
-| 8 | **Storage Class Performance** | warn if PVC uses `standard`, `hostpath`, or `slow` |
-| 9 | **Operator Versioning** | warn if the operator image uses `:latest` tag |
-| 10 | **Predictive Oplog Window** | warn > 40% consumed; crit > 70% consumed |
-| 11 | **Search Auth** (`skipAuthenticationToSearchIndexManagementServer`) | crit if `true` — mongod↔mongot without authentication |
-| 12 | **Search TLS Mode** (`searchTLSMode`) | crit if `disabled`; warn if `allowTLS`/`preferTLS`; pass if `requireTLS` |
+**1. Build the Docker image**
 
-Findings are sorted by severity (crit → warn → pass) and served via the `/api/advisor` endpoint.
+```bash
+docker build -t mongot-monitor:latest .
+```
+
+For a private registry (Docker Hub, ECR, GCR):
+
+```bash
+docker build -t <your-registry>/mongot-monitor:1.0.0 .
+docker push <your-registry>/mongot-monitor:1.0.0
+```
+
+Update the `image:` field in `k8s/deployment.yaml` accordingly.
+
+> ⚠️ **Important**: after every code update, rebuild and restart the deployment:
+> ```bash
+> docker build -t mongot-monitor:latest .
+> kubectl rollout restart deployment/mongot-monitor -n mongodb
+> ```
+
+**2. Configure the MongoDB URI**
+
+The connection to **mongod** is required for oplog, index, and compliance checks.
+**mongot** is always discovered automatically via Kubernetes — no URI needed for it.
+
+Edit `k8s/secret.yaml` based on where your mongod is running:
+
+```bash
+# Scenario A — mongod inside the cluster (MCK): use the internal Service DNS
+kubectl get svc -n mongodb   # look for a ClusterIP on port 27017
+```
+
+```yaml
+# Scenario A — in-cluster (MCK)
+stringData:
+  MONGODB_URI: "mongodb://USER:PASSWORD@<rs-name>-svc.<namespace>.svc.cluster.local/admin?replicaSet=<RS>&tls=true&tlsAllowInvalidCertificates=true&authSource=admin&authMechanism=SCRAM-SHA-256"
+
+# Scenario B — Atlas (SRV)
+# MONGODB_URI: "mongodb+srv://USER:PASSWORD@cluster0.xxxxx.mongodb.net/admin?authSource=admin&authMechanism=SCRAM-SHA-256"
+
+# Scenario C — External replica set with DNS-resolvable hostnames
+# MONGODB_URI: "mongodb://USER:PASSWORD@host1:27017,host2:27017/admin?replicaSet=RS&tls=true&authSource=admin&authMechanism=SCRAM-SHA-256"
+```
+
+> `authMechanism=SCRAM-SHA-256` is required by MongoDB 7+ with MCK.
+
+**3. Apply manifests**
+
+```bash
+kubectl apply -f k8s/rbac.yaml        # ServiceAccount + ClusterRole
+kubectl apply -f k8s/secret.yaml      # MongoDB URI
+kubectl apply -f k8s/deployment.yaml  # Deployment
+kubectl apply -f k8s/service.yaml     # NodePort
+```
+
+| File | Description |
+|:---|:---|
+| `k8s/rbac.yaml` | ServiceAccount + ClusterRole with minimal permissions (includes `pods/proxy`) |
+| `k8s/secret.yaml` | MongoDB URI as a K8s Secret |
+| `k8s/deployment.yaml` | Deployment with liveness and readiness probes on `/healthz` |
+| `k8s/service.yaml` | NodePort Service to expose the dashboard |
+
+> **Namespace**: all manifests default to `mongodb`. Update `namespace:` in all 4 files if yours is different.
+
+**4. Access the dashboard**
+
+```bash
+kubectl get svc mongot-monitor -n mongodb
+# Example: 5050:31855/TCP  →  NodePort = 31855
+```
+
+- **Docker Desktop**: `http://localhost:<NODE_PORT>`
+- **Remote cluster** (GKE, EKS, on-prem): `http://<NODE_IP>:<NODE_PORT>` (see `kubectl get nodes -o wide`)
+
+> On Docker Desktop with MCK, the internal DNS (`<rs>-svc.mongodb.svc.cluster.local`) is reachable directly from the pod. Do not use hostnames from the host's `/etc/hosts` — they are not resolvable from inside the cluster.
+
+---
+
+## 🔌 API Endpoints
+
+| Endpoint | Description |
+|:---|:---|
+| `/` | HTML Dashboard |
+| `/metrics` | Full JSON snapshot (from cache) |
+| `/api/v1/search_metrics` | Stable versioned API — fixed schema for external consumers |
+| `/api/advisor` | SRE findings in JSON (crit → warn → pass) |
+| `/healthz` | Liveness probe — always returns 200 if Flask is running |
+| `/healthcheck` | Detailed status (MongoDB ping, K8s API, cache age) |
+| `/api/logs/<ns>/<pod>` | Last 50 lines of pod logs |
+| `/api/download_logs/<ns>/<pod>` | Download logs (`?time=1h&level=error`) |
 
 ---
 
@@ -294,16 +329,16 @@ frontend/
     js/
       utils.js           # Utilities (formatBytes, pill, gaugeRing, …)
       logs.js            # Live log management
-      advisor.js         # Thin renderer (logic lives in advisor.py)
+      advisor.js         # Advisor renderer
       pipeline.js        # Sync Pipeline Analyzer
       render.js          # Main renderer + polling
 
 tests/
   conftest.py
-  test_advisor.py        # 52 tests — every SRE check
-  test_background.py     # 6 tests — collector and cache
-  test_frontend.py       # 47 tests — dashboard, CSS, JS, API
-  test_security.py       # 37 tests — validation, headers, auth
+  test_advisor.py        # tests — every SRE check
+  test_background.py     # tests — collector and cache
+  test_frontend.py       # tests — dashboard, CSS, JS, API
+  test_security.py       # tests — validation, headers, auth
 ```
 
 ---
@@ -314,74 +349,6 @@ tests/
 source venv/bin/activate
 python3 -m pytest tests/ -v
 ```
-
-Expected output: **142 tests, all green**.
-
----
-
-## 🐳 Containerized Deployment on Kubernetes
-
-### 1. Build the Docker image
-
-```bash
-docker build -t mongot-monitor:latest .
-```
-
-For a private registry (Docker Hub, ECR, GCR, etc.):
-
-```bash
-docker build -t <your-registry>/mongot-monitor:1.0.0 .
-docker push <your-registry>/mongot-monitor:1.0.0
-```
-
-Update the `image:` field in `k8s/deployment.yaml` accordingly.
-
-### 2. Configure the MongoDB URI
-
-The connection to **mongod** is required for oplog, index, and compliance checks (skipAuth, TLS mode).
-**mongot** is always discovered automatically via Kubernetes — no URI needed for it.
-
-Edit `k8s/secret.yaml` based on where your mongod is running:
-
-#### Scenario A — mongod inside the cluster (installed with MCK)
-
-Use the internal K8s DNS name of the replica set headless service:
-
-```bash
-# Find the service name
-kubectl get svc -n <namespace>
-# Look for a ClusterIP service on port 27017 (e.g. my-replica-set-svc)
-```
-
-```yaml
-stringData:
-  MONGODB_URI: "mongodb://USER:PASSWORD@<replica-set-name>-svc.<namespace>.svc.cluster.local/admin?replicaSet=<RS-name>&tls=true&tlsAllowInvalidCertificates=true&authSource=admin&authMechanism=SCRAM-SHA-256"
-```
-
-#### Scenario B — mongod outside the cluster (Atlas, on-prem, external VM)
-
-Use the external connection string provided by your MongoDB deployment:
-
-```yaml
-# Atlas (SRV):
-stringData:
-  MONGODB_URI: "mongodb+srv://USER:PASSWORD@cluster0.xxxxx.mongodb.net/admin?authSource=admin&authMechanism=SCRAM-SHA-256"
-
-# Replica set with DNS-resolvable hostnames:
-stringData:
-  MONGODB_URI: "mongodb://USER:PASSWORD@host1:27017,host2:27017,host3:27017/admin?replicaSet=RS&tls=true&authSource=admin&authMechanism=SCRAM-SHA-256"
-```
-
-> `authMechanism=SCRAM-SHA-256` is required by MongoDB 7+ with MCK. Remove it only if you are using MongoDB ≤ 6 with SCRAM-SHA-1 authentication.
-
-### 3. Apply manifests in order
-
-```bash
-# 1. RBAC (ServiceAccount + ClusterRole + Binding)
-kubectl apply -f k8s/rbac.yaml
-
-# 2. MongoDB URI Secret
-kubectl apply -f k8s/secret.yaml
 
 # 3. Deployment
 kubectl apply -f k8s/deployment.yaml
