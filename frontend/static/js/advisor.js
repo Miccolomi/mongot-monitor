@@ -14,17 +14,7 @@ function buildDiagnosisPanel(findings) {
     const icon   = health === 'critical' ? '🔴' : health === 'degraded' ? '🟡' : '🟢';
 
     let h = `<div class="c s4" style="background:#0a0d14;border:1px solid #1a1f2e;padding:20px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:18px">
-        <div>
-          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:#6b7394;margin-bottom:4px">🔬 Automatic Search Diagnosis</div>
-          <div style="font-size:15px;font-weight:700;color:${color}">${icon} Cluster Health — ${health.toUpperCase()}</div>
-        </div>
-        <div style="display:flex;gap:16px;font-size:12px;font-weight:600">
-          <span style="color:#ff1744">✖ ${crits.length} critical</span>
-          <span style="color:#ffab00">⚠ ${warns.length} warnings</span>
-          <span style="color:#00e676">✔ ${passes.length} passed</span>
-        </div>
-      </div>
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:#6b7394;margin-bottom:16px">🔬 Automatic Search Diagnosis</div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">`;
 
     // Health Summary column
