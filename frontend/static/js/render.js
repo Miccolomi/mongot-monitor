@@ -8,30 +8,28 @@ function render(d) {
   const sp=$('pill'); sp.className='pill '+(allOk?'p-ok':anyPod?'p-w':'p-e');
   sp.innerHTML=`<span class="pill-d"></span>${allOk?'ALL OK':anyPod?'WARN':'NO PODS'}`;
 
-  let h='';
-
-  // 0. GLOBAL DIAGNOSTIC ERRORS
-  if (d.global_errors && d.global_errors.length > 0) {
-      h += `<div class="c s4" style="background:#ff174411; border:1px solid #ff174466; border-left:4px solid #ff1744;">
-              <div class="c-h" style="border-bottom:none; margin-bottom:8px;"><span>🚨</span><span class="c-t" style="color:#ff6b6b;font-weight:700">DIAGNOSTIC & CONNECTION ERRORS</span></div>
-              <div style="font-size:11px; color:#c9d1e0; margin-bottom:10px; padding:0 12px;">The Python backend detected network or permission failures. Some routes or metrics may be missing:</div>
-              <ul style="margin:0; padding:0 12px 12px 30px; font-size:11px; color:#ffb4b4; line-height:1.6; font-family:monospace;">`;
-      d.global_errors.forEach(err => {
-          h += `<li>${err}</li>`;
-      });
-      h += `  </ul>
-            </div>`;
-  } else {
-      h += `<div class="c s4" style="background:#00e67611; border:1px solid #00e67644; border-left:4px solid #00e676; padding:12px;">
-              <div style="display:flex; align-items:center; gap:10px;">
-                  <span style="font-size:16px;">✅</span>
-                  <div>
-                      <div style="color:#00e676; font-weight:700; font-size:12px; margin-bottom:2px; text-transform:uppercase; letter-spacing:1px;">No Errors Detected (All Systems Operational)</div>
-                      <div style="color:#c9d1e0; font-size:11px;">All connections (K8s API, MongoDB Auth, Prometheus Scraping) are active and functioning.</div>
-                  </div>
-              </div>
-            </div>`;
+  // 0. CONNECTION BANNER (above grid)
+  const connBanner = document.getElementById('connection-banner');
+  if (connBanner) {
+      if (d.global_errors && d.global_errors.length > 0) {
+          let errs = d.global_errors.map(e => `<li>${escapeHtml(e)}</li>`).join('');
+          connBanner.innerHTML = `<div style="background:#ff174411;border:1px solid #ff174466;border-left:4px solid #ff1744;border-radius:10px;padding:12px 16px;margin-bottom:10px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span>🚨</span><span style="color:#ff6b6b;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:1px">Diagnostic &amp; Connection Errors</span></div>
+            <div style="font-size:11px;color:#c9d1e0;margin-bottom:8px">The Python backend detected network or permission failures. Some metrics may be missing:</div>
+            <ul style="margin:0;padding:0 0 0 18px;font-size:11px;color:#ffb4b4;line-height:1.8;font-family:monospace">${errs}</ul>
+          </div>`;
+      } else {
+          connBanner.innerHTML = `<div style="background:#00e67611;border:1px solid #00e67644;border-left:4px solid #00e676;border-radius:10px;padding:12px 16px;margin-bottom:10px;display:flex;align-items:center;gap:10px;">
+            <span style="font-size:16px">✅</span>
+            <div>
+              <div style="color:#00e676;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:1px">No Errors Detected (All Systems Operational)</div>
+              <div style="color:#c9d1e0;font-size:11px;margin-top:2px">All connections (K8s API, MongoDB Auth, Prometheus Scraping) are active and functioning.</div>
+            </div>
+          </div>`;
+      }
   }
+
+  let h='';
 
   // 1. OPLOG & K8s DISCOVERY
   h+=`<div class="c s2"><div class="c-h"><span>🌍</span><span class="c-t">Global DB Status</span></div>`;
@@ -71,7 +69,8 @@ function render(d) {
   }
   h+=`</div>`;
 
-  // 2. SRE ADVISOR PANEL (findings injected by fetchM from /api/advisor)
+  // 2. DIAGNOSIS PANEL + SRE ADVISOR
+  h += buildDiagnosisPanel(d._advisor_findings || []);
   h += buildAdvisorHTML(d._advisor_findings || []);
 
   // 3. PODS & PROMETHEUS METRICS
