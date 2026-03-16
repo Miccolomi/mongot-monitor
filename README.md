@@ -1,133 +1,135 @@
+> 🇮🇹 **Documentazione in italiano disponibile:** [README-it.md](README-it.md)
+
 # 🔬 MongoDB Search Diagnostics
 
-Un cruscotto Enterprise avanzato e standalone per il monitoraggio dei nodi di ricerca MongoDB Search (`mongot`) deployati su Kubernetes tramite il MongoDB Kubernetes Operator (CRD `MongoDBSearch`).
+An advanced, standalone Enterprise dashboard for monitoring MongoDB Search (`mongot`) nodes deployed on Kubernetes via the MongoDB Kubernetes Operator (`MongoDBSearch` CRD).
 
-Questo tool va oltre le classiche metriche Prometheus: incrocia in tempo reale i dati del database (Oplog, stato degli indici) con lo stato dell'infrastruttura (Kubernetes Events, PVC, CPU Limits, Live Logs) per fornire una vista unificata dello stack di ricerca e un **SRE Advisor automatico** basato su Python.
+This tool goes beyond standard Prometheus metrics: it correlates real-time database data (Oplog, index status) with infrastructure state (Kubernetes Events, PVC, CPU Limits, Live Logs) to provide a unified view of your search stack and a built-in **Python-backed SRE Advisor**.
 
 ---
 
-## ✨ Caratteristiche Principali
+## ✨ Key Features
 
-### 🧠 SRE Advisor (15 check automatici)
+### 🧠 SRE Advisor (15 automated checks)
 
-Ogni ciclo di raccolta esegue in Python una serie di check sullo stato del cluster e dell'indice. I finding vengono ordinati per severità (crit → warn → pass) e serviti via `/api/advisor`.
+Every collection cycle runs a set of Python checks against the cluster and index state. Findings are sorted by severity (crit → warn → pass) and served via `/api/advisor`.
 
-| # | Check | Soglie |
+| # | Check | Thresholds |
 |:---|:---|:---|
-| 1 | **Spazio Disco (Regola 200%)** | warn se libero < 200% dell'usato; crit se disco ≥ 90% (mongot entra in read-only) |
-| 2 | **Consolidamento Indici** | warn se più di un indice dello stesso tipo sulla stessa collection (fullText + vectorSearch sulla stessa collection è valido: Hybrid Search) |
-| 3 | **Collo di Bottiglia I/O** | crit se disk queue > 10 e lag > 5s contemporaneamente |
-| 4 | **CPU & QPS** | crit se CPU > 80%; warn se QPS > 10 × core |
+| 1 | **Disk Space (200% Rule)** | warn if free < 200% of used; crit if disk ≥ 90% (mongot enters read-only) |
+| 2 | **Index Consolidation** | warn if more than one index of the same type on the same collection (fullText + vectorSearch is valid: Hybrid Search) |
+| 3 | **I/O Bottleneck** | crit if disk queue > 10 AND lag > 5s simultaneously |
+| 4 | **CPU & QPS** | crit if CPU > 80%; warn if QPS > 10 × cores |
 | 5 | **Memory Starvation (Page Faults)** | warn > 500/s; crit > 1000/s |
-| 6 | **OOMKilled & MMap Risk** | crit se heap JVM ≥ 90% del limite pod o se OOMKilled rilevato |
-| 7 | **Stato CRD Operator** | crit se la CRD non è in fase `Running` |
-| 8 | **Storage Class Performance** | warn se PVC usa `standard`, `hostpath` o `slow` |
-| 9 | **Versioning Operator** | warn se l'immagine usa il tag `:latest` |
-| 10 | **Oplog Window Predittivo** | warn > 40% consumato; crit > 70% consumato — previene Initial Sync forzati |
-| 11 | **Search Auth** | crit se `skipAuthenticationToSearchIndexManagementServer=true` — mongod↔mongot senza autenticazione |
-| 12 | **Search TLS Mode** | crit se `searchTLSMode=disabled`; warn se `allowTLS`/`preferTLS`; pass se `requireTLS` |
-| 13 | **Search Efficiency (Scan Ratio)** | warn > 50:1; crit > 500:1; warning predittivo se ratio alto + latency bassa (cardinality problem) |
-| 14 | **Vector Search Efficiency** | stessi threshold del scan ratio ma calcolato su `$vectorSearch` separatamente |
-| 15 | **HNSW Visited Nodes** | warn > 1000 nodi/query; crit > 5000 — early warning saturazione CPU su ANN |
+| 6 | **OOMKilled & MMap Risk** | crit if JVM heap ≥ 90% of pod limit or OOMKilled detected |
+| 7 | **CRD Operator Status** | crit if CRD is not in `Running` phase |
+| 8 | **Storage Class Performance** | warn if PVC uses `standard`, `hostpath`, or `slow` |
+| 9 | **Operator Versioning** | warn if operator image uses `:latest` tag |
+| 10 | **Predictive Oplog Window** | warn > 40% consumed; crit > 70% consumed — prevents forced Initial Sync |
+| 11 | **Search Auth** | crit if `skipAuthenticationToSearchIndexManagementServer=true` — mongod↔mongot without authentication |
+| 12 | **Search TLS Mode** | crit if `searchTLSMode=disabled`; warn if `allowTLS`/`preferTLS`; pass if `requireTLS` |
+| 13 | **Search Efficiency (Scan Ratio)** | warn > 50:1; crit > 500:1; predictive warning if high ratio + low latency (cardinality problem) |
+| 14 | **Vector Search Efficiency** | same thresholds as scan ratio but computed separately for `$vectorSearch` |
+| 15 | **HNSW Visited Nodes** | warn > 1000 nodes/query; crit > 5000 — early warning for ANN CPU saturation |
 
-### 📡 Search QPS & Latenza Real-Time
+### 📡 Search QPS & Real-Time Latency
 
-Il pannello **🔎 Search Commands** mostra metriche di throughput calcolate tramite delta tra cicli successivi di Prometheus:
+The **🔎 Search Commands** panel shows throughput metrics computed as deltas between successive Prometheus scrape cycles:
 
-- **`$search QPS`** e **`$vectorSearch QPS`** in evidenza (richieste/secondo)
-- **Latenza media** calcolata come `Δsomma_latenza / Δconteggio` — la latenza reale per singola query, non il picco
-- **Latenza massima** — picco storico dal counter Prometheus
-- **Failure counters** per `$search` e `$vectorSearch`
+- **`$search QPS`** and **`$vectorSearch QPS`** displayed prominently (requests/second)
+- **Average latency** computed as `Δlatency_sum / Δcount` — actual per-query latency, not a peak
+- **Max latency** — historical peak from the Prometheus counter
+- **Failure counters** for `$search` and `$vectorSearch`
 
-I valori di QPS si attivano dal secondo ciclo di raccolta (è necessario un delta temporale).
+QPS values activate from the second collection cycle onward (a time delta is required).
 
 ### 🎯 Search Efficiency — Scan Ratio (EMA-smoothed)
 
-`scan_ratio = candidates_examined / results_returned` è il vero indicatore di efficienza di una query search. La latency da sola non basta: una query a 50ms con 200k candidates esaminati diventerà un timeout non appena il dataset cresce.
+`scan_ratio = candidates_examined / results_returned` is the true indicator of search query efficiency. Latency alone is not enough: a 50ms query with 200k candidates examined will become a timeout as the dataset grows.
 
-Sono calcolati **due ratio separati**: uno per `$search` (`mongot_query_candidates_examined_total` con fallback su `mongot_query_documents_scanned`) e uno dedicato per `$vectorSearch` (`mongot_vector_query_candidates_examined_total`).
+Two **separate ratios** are computed: one for `$search` (`mongot_query_candidates_examined_total` with fallback to `mongot_query_documents_scanned`) and one dedicated for `$vectorSearch` (`mongot_vector_query_candidates_examined_total`).
 
-Per evitare falsi positivi su traffico basso (es. 1 risultato / 500 candidati da una singola query), il ratio è **EMA-smoothed** (α = 0.3) con guard: se `Δresults < 10` l'EMA non viene aggiornata.
+To avoid false positives under low traffic (e.g. 1 result / 500 candidates from a single query), the ratio is **EMA-smoothed** (α = 0.3) with a guard: if `Δresults < 10` the EMA is not updated.
 
-| Ratio | Interpretazione |
+| Ratio | Meaning |
 |:---|:---|
-| < 5 | Eccellente — indice molto selettivo |
-| 5 – 50 | Normale |
-| 50 – 500 | Query inefficiente — indice o analyzer da rivedere |
-| > 500 | Critico — indice o query seriamente problematici |
+| < 5 | Excellent — highly selective index |
+| 5 – 50 | Normal |
+| 50 – 500 | Inefficient query — review index or analyzer |
+| > 500 | Critical — index or query is seriously problematic |
 
-**Cardinality problem detection (predittivo):** se `scan_ratio > 50` ma `latency < 100ms`, l'Advisor emette un warning — l'indice è poco selettivo ma il dataset è ancora abbastanza piccolo da nascondere il costo. Questo segnale non è fornito da Ops Manager.
+**Predictive cardinality detection:** if `scan_ratio > 50` but `latency < 100ms`, the Advisor emits a warning — the index is non-selective but the dataset is still small enough to hide the cost. This signal is not provided by Ops Manager.
 
-**Anti-pattern zero results:** se `results_returned = 0` ma `candidates_examined > 0`, viene emesso un warning specifico. Cause tipiche: `$match` post-search troppo restrittivo, scoring threshold troppo alto, pipeline mal progettata.
+**Zero-results anti-pattern:** if `results_returned = 0` but `candidates_examined > 0`, a specific warning is raised. Common causes: post-search `$match` too restrictive, scoring threshold too high, misconfigured pipeline.
 
 ### 🧬 HNSW Visited Nodes — Early Warning CPU Saturation
 
-`mongot_vector_search_hnsw_visited_nodes` (fallback: `mongot_vector_search_graph_nodes_visited`) misura quanti nodi del grafo HNSW vengono attraversati per ogni query `$vectorSearch`. È un **early warning per la saturazione CPU**: il carico cresce prima ancora che la latency diventi visibile.
+`mongot_vector_search_hnsw_visited_nodes` (fallback: `mongot_vector_search_graph_nodes_visited`) measures how many nodes in the HNSW graph are traversed per `$vectorSearch` query. It is an **early warning for CPU saturation**: load increases before latency becomes visible.
 
-| Visited nodes | Interpretazione |
+| Visited nodes | Meaning |
 |:---|:---|
-| < 200 | Eccellente |
-| 200 – 1000 | Normale |
-| > 1000 | Query costosa — monitorare CPU |
-| > 5000 | ANN inefficiente — saturazione CPU imminente |
+| < 200 | Excellent |
+| 200 – 1000 | Normal |
+| > 1000 | Costly query — monitor CPU |
+| > 5000 | ANN inefficient — CPU saturation imminent |
 
-Valori alti indicano che l'ANN sta degenerando verso brute-force, tipicamente per `efSearch` troppo alto, scarsa connettività del grafo, o embedding di dimensioni eccessive. Il check è opzionale: viene saltato se la metrica non è esposta dalla versione di mongot installata.
+High values indicate ANN is degrading toward brute-force, typically due to excessive `efSearch`, poor graph connectivity, or oversized embedding dimensions. The check is optional: skipped if the metric is not exposed by the installed mongot version.
 
 ### ⏳ Index Build ETA
 
-Durante un Initial Sync o build massivo di un indice, appare un pannello dedicato **"⚙️ Index Build in Progress"** con:
+During an Initial Sync or bulk index build, a dedicated **"⚙️ Index Build in Progress"** panel appears with:
 
-- **Barra di avanzamento animata** — verde > 75%, arancione < 75%, rosso se stalled
-- **Contatore** documenti processati / totali con percentuale
-- **Velocità** in docs/sec (calcolata tramite delta tra cicli di raccolta)
-- **ETA dinamica** in formato h/m/s oppure warning **"INDEX BUILD STALLED"** se la velocità scende sotto 100 docs/s per almeno 30 secondi
+- **Animated progress bar** — green > 75%, orange < 75%, red if stalled
+- **Document counter** — processed / total with percentage
+- **Speed** in docs/sec (computed as a delta between collection cycles)
+- **Dynamic ETA** in h/m/s format or **"INDEX BUILD STALLED"** warning if speed drops below 100 docs/s for at least 30 seconds
 
-Il pannello è visibile solo quando è attivo un Initial Sync (`initial_sync_in_progress > 0`).
+The panel is only shown while an Initial Sync is active (`initial_sync_in_progress > 0`).
 
-### 🔍 Pod Discovery Robusta (gerarchia a 4 livelli)
+### 🔍 Robust Pod Discovery (4-level hierarchy)
 
-La discovery dei pod `mongot` usa una gerarchia resistente a upgrade rolling, scaling e variazioni di naming tra versioni MCK:
+Pod discovery uses a hierarchy resilient to rolling upgrades, scaling events, and naming variations across MCK versions:
 
-1. **Label ufficiale MCK** `app.kubernetes.io/component=search` — il metodo più affidabile
-2. **Container name** `mongot` — fallback stabile tra versioni MCK
-3. **Container image** — contiene `mongodb-enterprise-search` o `mongot`
-4. **Nome pod (ultima spiaggia)** — euristica, esclude `mongod` e `monitor`
+1. **Official MCK label** `app.kubernetes.io/component=search` — most reliable
+2. **Container name** `mongot` — stable fallback across MCK versions
+3. **Container image** — contains `mongodb-enterprise-search` or `mongot`
+4. **Pod name (last resort)** — heuristic, excludes `mongod` and `monitor`
 
-Il pod del monitor stesso viene sempre escluso tramite `app: mongot-monitor`.
+The monitor pod itself is always excluded via `app: mongot-monitor`.
 
 ### 🌊 Atlas Search Sync Pipeline Analyzer
 
-Visualizza in tempo reale l'intero flusso dati `DB → Change Stream → RAM → Lucene`, calcolando il lag effettivo tra MongoDB e mongot e identificando il collo di bottiglia nella pipeline di indicizzazione.
+Real-time end-to-end visualization of the active data pipeline `DB → Change Stream → RAM → Lucene`, computing the actual replication lag between MongoDB and mongot and identifying the bottleneck in the indexing pipeline.
 
-### ⏱️ SRE Predittivo — Oplog Window
+### ⏱️ Predictive SRE — Oplog Window
 
-Monitora la finestra dell'Oplog e la confronta con il lag corrente di mongot. Se il lag supera il 40% o il 70% della finestra disponibile, emette rispettivamente un warn o un crit per prevenire Initial Sync forzati catastrofici prima che accadano.
+Monitors the MongoDB Oplog window and compares it against the current mongot lag. Emits a warn at 40% or a crit at 70% window consumption to prevent catastrophic forced Initial Sync before it happens.
 
-### 🩺 Diagnostica K8s Universale
+### 🩺 Universal K8s Diagnostics
 
-Auto-scopre installazioni Helm, traccia le versioni di Kubernetes e dell'Operator MCK, mappa dinamicamente PVC, Servizi e Pod. Rileva OOMKilled, eventi K8s recenti e log live direttamente nella dashboard.
+Auto-discovers Helm releases, tracks Kubernetes and MCK Operator versions, dynamically maps PVCs, Services, and Pods. Detects OOMKilled events, recent K8s warnings, and streams live logs directly in the dashboard.
 
 ### 📜 Log Management & Export
 
-Terminale live integrato per visualizzare i log di `mongot` e dell'Operator in streaming. Download completo degli archivi di log filtrabili per finestra temporale (`?time=1h`) e severità (`?level=error`).
+Built-in live terminal to stream `mongot` and Operator pod logs. Full log archive download filterable by time window (`?time=1h`) and severity (`?level=error`).
 
-### 📊 Prometheus Doppio Fallback
+### 📊 Prometheus Dual-Fallback Scraper
 
-Scraping delle metriche dai pod tramite accesso di rete diretto (HTTP) con fallback automatico sul tunnel K8s API Server Proxy — nessuna configurazione aggiuntiva richiesta.
+Metrics scraping via direct HTTP access to pods with automatic fallback to the K8s API Server Proxy tunnel — no extra configuration required.
 
 ### ⚡ Background Collector & Rate Engine
 
-La raccolta dati avviene su un thread daemon separato a intervallo configurabile. L'endpoint `/metrics` risponde sempre in < 1ms dalla cache in memoria — la dashboard non blocca mai su chiamate esterne.
+Data collection runs on a separate daemon thread at a configurable interval. The `/metrics` endpoint always responds in < 1ms from the in-memory cache — the dashboard never blocks on external calls.
 
-Tutta la logica di calcolo delta/rate è isolata nel modulo `engine/rate_calculator.py`, separato dal loop di raccolta. Questo significa:
+All delta/rate computation logic is isolated in `engine/rate_calculator.py`, separated from the collection loop:
 
-- **`background.py`** è un thin orchestrator: scrape → `compute_pod_rates()` → aggiornamento cache
-- **`engine/rate_calculator.py`** contiene QPS, latenza media, scan ratio EMA, HNSW, ETA — testabile indipendentemente
-- **Counter reset safety**: `_safe_delta()` restituisce `None` su delta negativo (reset contatori dopo restart del pod mongot); spike guard scarta QPS > 50.000/s (counter reset dove il nuovo valore è > snapshot precedente); primo ciclo (`last_s=None`) salta tutto silenziosamente — nessun falso spike all'avvio
+- **`background.py`** is a thin orchestrator: scrape → `compute_pod_rates()` → cache update
+- **`engine/rate_calculator.py`** contains QPS, average latency, scan ratio EMA, HNSW, ETA — independently testable
+- **Counter reset safety**: `_safe_delta()` returns `None` on negative delta (counter reset after mongot pod restart); spike guard discards QPS > 50,000/s (counter reset where new value exceeds old snapshot); first cycle (`last_s=None`) skips all computation silently — no spurious spikes on startup
 
-### 🔌 API Stabile (`/api/v1/search_metrics`)
+### 🔌 Stable API (`/api/v1/search_metrics`)
 
-Endpoint JSON versionato con schema fisso, disaccoppiato dai nomi interni delle metriche Prometheus:
+Versioned JSON endpoint with a fixed schema, decoupled from internal Prometheus metric names:
 
 ```json
 {
@@ -147,25 +149,25 @@ Endpoint JSON versionato con schema fisso, disaccoppiato dai nomi interni delle 
 }
 ```
 
-Sicuro per consumer esterni (CI perf gate, dashboard Grafana, tool di alerting) — il backend può evolvere senza rompere il contratto API.
+Safe for external consumers (CI performance gates, Grafana dashboards, alerting tools) — the backend can evolve without breaking the API contract.
 
-### 🔒 Sicurezza
+### 🔒 Security
 
-HTTP Basic Auth opzionale, security headers (CSP, X-Frame-Options, X-Content-Type-Options), validazione degli input K8s names contro injection, CORS configurabile via CLI.
-
----
-
-## 🚀 Installazione e Avvio
-
-> **Prerequisiti**: `kubectl` configurato e puntato al tuo cluster. Stringa di connessione MongoDB con accesso in lettura su `local` (oplog) e sulle collection target.
+Optional HTTP Basic Auth, security headers (CSP, X-Frame-Options, X-Content-Type-Options), K8s name input validation against injection, configurable CORS via CLI.
 
 ---
 
-### Modalità 1 — Locale (Mac / PC)
+## 🚀 Installation & Setup
 
-Usa questa modalità per sviluppo, demo o quando preferisci girare il monitor fuori dal cluster.
+> **Prerequisites**: `kubectl` configured and pointing to your cluster. A MongoDB connection string with read access on `local` (oplog) and your target collections.
 
-**1. Clona e installa**
+---
+
+### Mode 1 — Local (Mac / PC)
+
+Use this mode for development, demos, or when you prefer running the monitor outside the cluster.
+
+**1. Clone and install**
 
 ```bash
 git clone https://github.com/Miccolomi/mongot-monitor.git
@@ -175,7 +177,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-**2. Avvia**
+**2. Start**
 
 ```bash
 python3 mongot_monitor.py \
@@ -184,58 +186,58 @@ python3 mongot_monitor.py \
   --port 5050
 ```
 
-Apri il browser su: **http://localhost:5050**
+Open your browser at: **http://localhost:5050**
 
-**Opzioni comuni**
+**CLI options**
 
-| Parametro | Default | Descrizione |
+| Parameter | Default | Description |
 |:---|:---|:---|
-| `--uri` | — | Stringa di connessione MongoDB |
-| `--namespace` | tutti | Namespace Kubernetes da monitorare |
-| `--port` | `5050` | Porta HTTP della dashboard |
-| `--interval` | `5` | Intervallo di raccolta in secondi |
-| `--auth` | — | Basic Auth — formato `user:password` |
-| `--in-cluster` | `false` | Auth K8s via ServiceAccount (solo in-cluster) |
-| `--host` | `0.0.0.0` | Indirizzo di binding Flask |
-| `--allowed-origins` | localhost | Origini CORS permesse (spazio-separate) |
+| `--uri` | — | MongoDB connection string |
+| `--namespace` | all | Kubernetes namespace to monitor |
+| `--port` | `5050` | HTTP port for the dashboard |
+| `--interval` | `5` | Collection interval in seconds |
+| `--auth` | — | Basic Auth — format `user:password` |
+| `--in-cluster` | `false` | K8s auth via ServiceAccount (in-cluster only) |
+| `--host` | `0.0.0.0` | Flask binding address |
+| `--allowed-origins` | localhost | CORS allowed origins (space-separated) |
 
 ---
 
-### Modalità 2 — Kubernetes (in-cluster)
+### Mode 2 — Kubernetes (in-cluster)
 
-Usa questa modalità per un deployment permanente nel cluster. Il monitor gira come pod e usa un ServiceAccount con RBAC per accedere all'API Kubernetes.
+Use this mode for a permanent deployment inside the cluster. The monitor runs as a pod and uses a ServiceAccount with RBAC to access the Kubernetes API.
 
-**1. Build dell'immagine Docker**
+**1. Build the Docker image**
 
 ```bash
 docker build -t mongot-monitor:latest .
 ```
 
-Per un registry privato (Docker Hub, ECR, GCR):
+For a private registry (Docker Hub, ECR, GCR):
 
 ```bash
-docker build -t <tuo-registry>/mongot-monitor:1.0.0 .
-docker push <tuo-registry>/mongot-monitor:1.0.0
+docker build -t <your-registry>/mongot-monitor:1.0.0 .
+docker push <your-registry>/mongot-monitor:1.0.0
 ```
 
-Aggiorna `image:` in `k8s/deployment.yaml` con il tag corretto.
+Update the `image:` field in `k8s/deployment.yaml` accordingly.
 
-> ⚠️ **Importante**: dopo ogni aggiornamento del codice, rifai il build e riavvia il deployment:
+> ⚠️ **Important**: after every code update, rebuild and restart the deployment:
 > ```bash
 > docker build -t mongot-monitor:latest .
 > kubectl rollout restart deployment/mongot-monitor -n mongodb
 > ```
 
-**2. Configura la URI MongoDB**
+**2. Configure the MongoDB URI**
 
-La connessione a **mongod** è necessaria per oplog, indici e check di compliance.
-**mongot** è sempre scoperto automaticamente via Kubernetes — nessuna URI necessaria per esso.
+The connection to **mongod** is required for oplog, index, and compliance checks.
+**mongot** is always discovered automatically via Kubernetes — no URI needed for it.
 
-Edita `k8s/secret.yaml` in base a dove si trova il tuo mongod:
+Edit `k8s/secret.yaml` based on where your mongod is running:
 
 ```bash
-# Scenario A — mongod dentro il cluster (MCK): usa il DNS interno del Service
-kubectl get svc -n mongodb   # cerca il ClusterIP su porta 27017
+# Scenario A — mongod inside the cluster (MCK): use the internal Service DNS
+kubectl get svc -n mongodb   # look for a ClusterIP on port 27017
 ```
 
 ```yaml
@@ -246,88 +248,88 @@ stringData:
 # Scenario B — Atlas (SRV)
 # MONGODB_URI: "mongodb+srv://USER:PASSWORD@cluster0.xxxxx.mongodb.net/admin?authSource=admin&authMechanism=SCRAM-SHA-256"
 
-# Scenario C — Replica set esterno con hostname DNS
+# Scenario C — External replica set with DNS-resolvable hostnames
 # MONGODB_URI: "mongodb://USER:PASSWORD@host1:27017,host2:27017/admin?replicaSet=RS&tls=true&authSource=admin&authMechanism=SCRAM-SHA-256"
 ```
 
-> `authMechanism=SCRAM-SHA-256` è richiesto da MongoDB 7+ con MCK.
+> `authMechanism=SCRAM-SHA-256` is required by MongoDB 7+ with MCK.
 
-**3. Applica i manifest**
+**3. Apply manifests**
 
 ```bash
 kubectl apply -f k8s/rbac.yaml        # ServiceAccount + ClusterRole
-kubectl apply -f k8s/secret.yaml      # URI MongoDB
+kubectl apply -f k8s/secret.yaml      # MongoDB URI
 kubectl apply -f k8s/deployment.yaml  # Deployment
 kubectl apply -f k8s/service.yaml     # NodePort
 ```
 
-| File | Descrizione |
+| File | Description |
 |:---|:---|
-| `k8s/rbac.yaml` | ServiceAccount + ClusterRole con permessi minimi (incluso `pods/proxy`) |
-| `k8s/secret.yaml` | MongoDB URI come K8s Secret |
-| `k8s/deployment.yaml` | Deployment con probe liveness e readiness su `/healthz` |
-| `k8s/service.yaml` | NodePort per esporre la dashboard |
+| `k8s/rbac.yaml` | ServiceAccount + ClusterRole with minimal permissions (includes `pods/proxy`) |
+| `k8s/secret.yaml` | MongoDB URI as a K8s Secret |
+| `k8s/deployment.yaml` | Deployment with liveness and readiness probes on `/healthz` |
+| `k8s/service.yaml` | NodePort Service to expose the dashboard |
 
-> **Namespace**: tutti i manifest usano `mongodb` come default. Modifica `namespace:` in tutti e 4 i file se il tuo è diverso.
+> **Namespace**: all manifests default to `mongodb`. Update `namespace:` in all 4 files if yours is different.
 
-**4. Accedi alla dashboard**
+**4. Access the dashboard**
 
 ```bash
 kubectl get svc mongot-monitor -n mongodb
-# Esempio: 5050:31855/TCP  →  NodePort = 31855
+# Example: 5050:31855/TCP  →  NodePort = 31855
 ```
 
 - **Docker Desktop**: `http://localhost:<NODE_PORT>`
-- **Cluster remoto** (GKE, EKS, on-prem): `http://<NODE_IP>:<NODE_PORT>` (vedi `kubectl get nodes -o wide`)
+- **Remote cluster** (GKE, EKS, on-prem): `http://<NODE_IP>:<NODE_PORT>` (see `kubectl get nodes -o wide`)
 
-> Su Docker Desktop con MCK, il DNS interno (`<rs>-svc.mongodb.svc.cluster.local`) è raggiungibile direttamente dal pod. Non usare hostname da `/etc/hosts` del Mac — non sono risolvibili dall'interno del cluster.
+> On Docker Desktop with MCK, the internal DNS (`<rs>-svc.mongodb.svc.cluster.local`) is reachable directly from the pod. Do not use hostnames from the host's `/etc/hosts` — they are not resolvable from inside the cluster.
 
 ---
 
-## 🔌 Endpoint API
+## 🔌 API Endpoints
 
-| Endpoint | Descrizione |
+| Endpoint | Description |
 |:---|:---|
-| `/` | Dashboard HTML |
-| `/metrics` | Snapshot completo JSON (dalla cache) |
-| `/api/v1/search_metrics` | API stabile versionata — schema fisso per consumer esterni |
-| `/api/advisor` | Findings SRE in JSON (crit → warn → pass) |
-| `/healthz` | Liveness probe — risponde sempre 200 se Flask è attivo |
-| `/healthcheck` | Stato dettagliato (MongoDB ping, K8s API, età cache) |
-| `/api/logs/<ns>/<pod>` | Ultimi 50 log del pod |
-| `/api/download_logs/<ns>/<pod>` | Download log (`?time=1h&level=error`) |
+| `/` | HTML Dashboard |
+| `/metrics` | Full JSON snapshot (from cache) |
+| `/api/v1/search_metrics` | Stable versioned API — fixed schema for external consumers |
+| `/api/advisor` | SRE findings in JSON (crit → warn → pass) |
+| `/healthz` | Liveness probe — always returns 200 if Flask is running |
+| `/healthcheck` | Detailed status (MongoDB ping, K8s API, cache age) |
+| `/api/logs/<ns>/<pod>` | Last 50 lines of pod logs |
+| `/api/download_logs/<ns>/<pod>` | Download logs (`?time=1h&level=error`) |
 
 ---
 
-## 🏗️ Struttura del Progetto
+## 🏗️ Project Structure
 
 ```
 mongot_monitor.py        # App Factory + CLI entry point
-background.py            # BackgroundCollector (thin orchestrator, thread daemon)
-advisor.py               # SRE Advisor engine (15 check, Python puro)
-security.py              # Validazione input, security headers, Basic Auth
+background.py            # BackgroundCollector (thin orchestrator, daemon thread)
+advisor.py               # SRE Advisor engine (15 checks, pure Python)
+security.py              # Input validation, security headers, Basic Auth
 state.py                 # Shared mutable state (clients, cache, lock)
 
 engine/
-  rate_calculator.py     # Delta/rate engine: QPS, latenza, scan ratio EMA, HNSW, ETA
+  rate_calculator.py     # Delta/rate engine: QPS, latency, scan ratio EMA, HNSW, ETA
                          # Counter reset safety, spike guard, first-cycle protection
 
 collectors/
-  kubernetes.py          # Discovery K8s (pod, CRD, PVC, services, helm)
-  mongodb.py             # Collectors MongoDB (vitals, oplog, indexes)
-  prometheus.py          # Prometheus scraper con doppio fallback
+  kubernetes.py          # K8s discovery (pods, CRDs, PVCs, services, helm)
+  mongodb.py             # MongoDB collectors (vitals, oplog, indexes)
+  prometheus.py          # Prometheus scraper with dual fallback
 
 routes/
-  api.py                 # Blueprint API (/metrics, /api/v1/search_metrics, /api/advisor, /api/logs)
-  frontend.py            # Blueprint frontend (/, /favicon.ico)
+  api.py                 # API Blueprint (/metrics, /api/v1/search_metrics, /api/advisor, /api/logs)
+  frontend.py            # Frontend Blueprint (/, /favicon.ico)
 
 frontend/
   templates/
-    dashboard.html       # Template Jinja2
+    dashboard.html       # Jinja2 template
   static/
     css/main.css
     js/
-      utils.js           # Utility (formatBytes, pill, gaugeRing, …)
+      utils.js           # Utilities (formatBytes, pill, gaugeRing, …)
       logs.js            # Live log management
       advisor.js         # Advisor renderer
       pipeline.js        # Sync Pipeline Analyzer
@@ -335,42 +337,72 @@ frontend/
 
 tests/
   conftest.py
-  test_advisor.py        # test — ogni check SRE
-  test_background.py     # test — collector e cache
-  test_frontend.py       # test — dashboard, CSS, JS, API
-  test_security.py       # test — validazione, headers, auth
+  test_advisor.py        # tests — every SRE check
+  test_background.py     # tests — collector and cache
+  test_frontend.py       # tests — dashboard, CSS, JS, API
+  test_security.py       # tests — validation, headers, auth
 ```
 
 ---
 
-## 🧪 Esecuzione dei Test
+## 🧪 Running Tests
 
 ```bash
 source venv/bin/activate
 python3 -m pytest tests/ -v
 ```
 
-### Struttura manifest
+# 3. Deployment
+kubectl apply -f k8s/deployment.yaml
 
-| File | Descrizione |
+# 4. Service (NodePort)
+kubectl apply -f k8s/service.yaml
+```
+
+### 4. Access the dashboard
+
+```bash
+# Find the assigned NodePort
+kubectl get svc mongot-monitor -n mongodb
+# Example output: 5050:31855/TCP  →  NodePort = 31855
+```
+
+**Docker Desktop**: the node is `localhost`, so open:
+```
+http://localhost:<NODE_PORT>
+```
+
+**Remote cluster** (GKE, EKS, on-prem): use the IP of any worker node:
+```bash
+kubectl get nodes -o wide   # INTERNAL-IP or EXTERNAL-IP column
+http://<NODE_IP>:<NODE_PORT>
+```
+
+### Note for local development (Docker Desktop)
+
+If you are testing on Docker Desktop with MongoDB already installed in the cluster via MCK, the internal service DNS (`my-replica-set-svc.mongodb.svc.cluster.local`) is directly reachable from the pod — no additional configuration needed. Avoid using hostnames defined in `/etc/hosts` on the host machine (e.g. `work0.mongodb.local`): they are not resolvable from inside the pod.
+
+### Manifest overview
+
+| File | Description |
 |:---|:---|
-| `k8s/rbac.yaml` | ServiceAccount + ClusterRole con permessi minimi |
-| `k8s/secret.yaml` | MongoDB URI come K8s Secret |
-| `k8s/deployment.yaml` | Deployment con probe liveness (`/healthz`) e readiness (`/healthz`) |
-| `k8s/service.yaml` | NodePort per esporre la dashboard |
+| `k8s/rbac.yaml` | ServiceAccount + ClusterRole with minimal permissions |
+| `k8s/secret.yaml` | MongoDB URI as a K8s Secret |
+| `k8s/deployment.yaml` | Deployment with liveness (`/healthz`) and readiness (`/healthz`) probes |
+| `k8s/service.yaml` | NodePort Service to expose the dashboard |
 
-> **Namespace**: tutti i manifest usano `mongodb` come namespace di default. Modifica il campo `namespace:` in tutti e 4 i file se il tuo namespace è diverso.
+> **Namespace**: all manifests default to the `mongodb` namespace. Update the `namespace:` field in all 4 files if yours is different.
 
 ---
 
-## 🔌 Endpoint API
+## 🔌 API Endpoints
 
-| Endpoint | Metodo | Descrizione |
+| Endpoint | Method | Description |
 |:---|:---|:---|
-| `/` | GET | Dashboard HTML |
-| `/metrics` | GET | Snapshot completo JSON (dalla cache) |
-| `/api/advisor` | GET | Findings SRE in JSON |
-| `/healthcheck` | GET | Stato di salute del monitor |
-| `/api/logs/<ns>/<pod>` | GET | Ultimi 50 log del pod |
-| `/api/download_logs/<ns>/<pod>` | GET | Download log (parametri `?time=1h&level=error`) |
+| `/` | GET | HTML Dashboard |
+| `/metrics` | GET | Full JSON snapshot (from cache) |
+| `/api/advisor` | GET | SRE findings in JSON |
+| `/healthcheck` | GET | Monitor health status |
+| `/api/logs/<ns>/<pod>` | GET | Last 50 lines of pod logs |
+| `/api/download_logs/<ns>/<pod>` | GET | Download logs (`?time=1h&level=error`) |
 
