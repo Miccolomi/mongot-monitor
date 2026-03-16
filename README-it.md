@@ -2,9 +2,23 @@
 
 # 🔬 MongoDB Search Diagnostics
 
-Un cruscotto Enterprise avanzato e standalone per il monitoraggio dei nodi di ricerca MongoDB Search (`mongot`) deployati su Kubernetes tramite il MongoDB Kubernetes Operator (CRD `MongoDBSearch`).
+**mongot-monitor è uno strumento open-source di diagnostica per i nodi MongoDB Atlas Search.**
+Rileva automaticamente problemi di performance, lag di indicizzazione e anomalie di configurazione.
 
-Questo tool va oltre le classiche metriche Prometheus: incrocia in tempo reale i dati del database (Oplog, stato degli indici) con lo stato dell'infrastruttura (Kubernetes Events, PVC, CPU Limits, Live Logs) per fornire una vista unificata dello stack di ricerca e un **SRE Advisor automatico** basato su Python.
+Progettato per **SRE**, **operatori MongoDB** e **platform engineer** che gestiscono Atlas Search su Kubernetes.
+
+![Dashboard Screenshot](dashboard.png)
+
+---
+
+## Cosa fa?
+
+- **Rileva** nodi search bloccati, lag di indicizzazione, OOMKilled e configuration drift
+- **Analizza** in real-time l'efficienza delle query search, scan ratio e traversal del grafo HNSW
+- **Avvisa** prima che i problemi diventino outage — oplog window predittivo, cardinality warning, stall detection
+- **SRE Advisor integrato** esegue 15 check automatici a ogni ciclo e ordina i risultati per severità
+
+Nessun agent da installare. Nessuna infrastruttura aggiuntiva. Punta il tool al tuo cluster e vai.
 
 ---
 
