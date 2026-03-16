@@ -586,4 +586,4 @@ Exit code: `0` = healthy, `1` = degraded, `2` = critical.
 
 ### Interfaccia Web
 
-Il pannello dell'inspector appare automaticamente sopra la griglia principale, si aggiorna ogni 30 secondi e mostra una card per ogni indice. Se MongoDB non è configurato, il pannello mostra un messaggio esplicito invece di un errore.
+Il pannello dell'inspector appare automaticamente sopra la griglia principale al caricamento della pagina e mostra una card per ogni indice. Un pulsante **↺ Refresh** permette di rieseguire l'ispezione manualmente quando si vuole. Se MongoDB non è configurato, il pannello mostra un messaggio esplicito invece di un errore.

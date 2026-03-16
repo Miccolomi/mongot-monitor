@@ -586,4 +586,4 @@ Exit codes: `0` = healthy, `1` = degraded, `2` = critical.
 
 ### Web UI
 
-The inspector panel appears automatically above the main grid, refreshes every 30 seconds, and shows a card per index. If MongoDB is not configured, the panel displays a graceful "not connected" message instead of an error.
+The inspector panel appears automatically above the main grid on page load and shows a card per index. A **↺ Refresh** button lets you re-run the inspection on demand. If MongoDB is not configured, the panel displays a graceful "not connected" message instead of an error.
