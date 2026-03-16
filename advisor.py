@@ -587,3 +587,29 @@ def run_advisor(snapshot: Snapshot) -> list[Finding]:
     order = {"crit": 0, "warn": 1, "pass": 2}
     findings.sort(key=lambda f: order.get(f["status"], 3))
     return findings
+
+
+def format_diagnosis(findings: list[Finding]) -> dict:
+    """
+    Transform advisor findings into a structured diagnosis report.
+    Used by /api/diagnose and the --diagnose CLI flag.
+    """
+    crits  = [f for f in findings if f["status"] == "crit"]
+    warns  = [f for f in findings if f["status"] == "warn"]
+    passes = [f for f in findings if f["status"] == "pass"]
+
+    if crits:
+        health = "critical"
+    elif warns:
+        health = "degraded"
+    else:
+        health = "healthy"
+
+    return {
+        "health":          health,
+        "summary":         {"pass": len(passes), "warn": len(warns), "crit": len(crits)},
+        "critical":        [{"title": f["title"], "detail": f["value"]} for f in crits],
+        "warnings":        [{"title": f["title"], "detail": f["value"]} for f in warns],
+        "healthy":         [{"title": f["title"]} for f in passes],
+        "recommendations": [f["doc"] for f in crits + warns],
+    }

@@ -53,6 +53,19 @@ td{padding:8px 10px;border-bottom:1px solid #111827}
 .adv-doc{font-size:10px; color:#6b7394; font-style:italic}
 .st-pass{color:#00e676} .st-warn{color:#ffab00} .st-crit{color:#ff1744}
 
+/* Health Banner */
+.hb{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-radius:10px;margin-bottom:16px;flex-wrap:wrap;gap:10px;border-left:4px solid}
+.hb-healthy{background:#00e67611;border-color:#00e676}
+.hb-degraded{background:#ffab0011;border-color:#ffab00}
+.hb-critical{background:#ff174411;border-color:#ff1744;animation:hb-pulse 2s infinite alternate}
+@keyframes hb-pulse{from{background:#ff174411}to{background:#ff174422}}
+.hb-left{display:flex;align-items:center;gap:14px}
+.hb-icon{font-size:22px}
+.hb-title{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1px}
+.hb-sub{font-size:10px;color:#6b7394;margin-top:2px}
+.hb-counts{display:flex;gap:14px;font-size:11px;font-weight:600}
+.hb-recs{width:100%;font-size:11px;color:#c9d1e0;padding-top:10px;margin-top:4px;border-top:1px solid #1e2740;display:flex;flex-direction:column;gap:3px}
+
 /* Sync Pipeline */
 .pipe-box{background:#111827;border-radius:12px;padding:24px;border:1px solid #374151;margin-top:20px;box-shadow:inset 0 0 20px #00000080}
 .pipe-tit{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:#facc15;margin-bottom:20px;display:flex;justify-content:space-between}

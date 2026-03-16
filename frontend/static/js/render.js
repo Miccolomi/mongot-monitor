@@ -276,6 +276,44 @@ function render(d) {
   });
 }
 
+// ── Health Banner ─────────────────────────────────────
+function renderHealthBanner(findings) {
+    const banner = document.getElementById('health-banner');
+    if (!banner) return;
+    if (!findings || findings.length === 0) { banner.innerHTML = ''; return; }
+
+    const crits  = findings.filter(f => f.status === 'crit');
+    const warns  = findings.filter(f => f.status === 'warn');
+    const passes = findings.filter(f => f.status === 'pass');
+
+    const health  = crits.length > 0 ? 'critical' : warns.length > 0 ? 'degraded' : 'healthy';
+    const cls     = `hb hb-${health}`;
+    const icon    = health === 'critical' ? '🔴' : health === 'degraded' ? '🟡' : '🟢';
+    const color   = health === 'critical' ? '#ff1744' : health === 'degraded' ? '#ffab00' : '#00e676';
+    const label   = health.toUpperCase();
+
+    const recs = [...crits, ...warns].slice(0, 3)
+        .map(f => `<span>→ ${escapeHtml(f.doc)}</span>`).join('');
+    const recsHtml = recs ? `<div class="hb-recs">${recs}</div>` : '';
+
+    banner.innerHTML = `
+      <div class="${cls}">
+        <div class="hb-left">
+          <span class="hb-icon">${icon}</span>
+          <div>
+            <div class="hb-title" style="color:${color}">Cluster Health — ${label}</div>
+            <div class="hb-sub">Automatic Search Diagnosis &bull; ${findings.length} checks run</div>
+          </div>
+        </div>
+        <div class="hb-counts">
+          <span style="color:#ff1744">✖ ${crits.length} critical</span>
+          <span style="color:#ffab00">⚠ ${warns.length} warnings</span>
+          <span style="color:#00e676">✔ ${passes.length} passed</span>
+        </div>
+        ${recsHtml}
+      </div>`;
+}
+
 // ── Polling ───────────────────────────────────────────
 let iv;
 function setR(){if(iv)clearInterval(iv);iv=setInterval(fetchM,+$('rr').value*1000)}
@@ -294,6 +332,7 @@ async function fetchM(){
         }
         if(advisorResp.ok) {
             d._advisor_findings = await advisorResp.json();
+            renderHealthBanner(d._advisor_findings);
         }
         $('err').style.display='none';
         render(d);

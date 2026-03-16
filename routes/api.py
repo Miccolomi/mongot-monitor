@@ -80,6 +80,18 @@ def advisor():
     return jsonify(findings)
 
 
+@api_bp.route("/api/diagnose")
+def diagnose():
+    from advisor import format_diagnosis
+    with state.cache_lock:
+        findings = state.metrics_cache.get("advisor")
+
+    if findings is None:
+        return jsonify({"error": "Collector starting, no data yet"}), 503
+
+    return jsonify(format_diagnosis(findings))
+
+
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
 @api_bp.route("/metrics")

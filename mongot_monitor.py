@@ -80,6 +80,42 @@ app = create_app()
 
 # ── CLI entry point ───────────────────────────────────────────────────────────
 
+def _print_diagnosis(diag: dict) -> None:
+    """Print a human-readable diagnosis report to stdout."""
+    R = "\033[0m"
+    health = diag["health"]
+    color  = {"healthy": "\033[32m", "degraded": "\033[33m", "critical": "\033[31m"}.get(health, "")
+    s      = diag["summary"]
+
+    print("\n" + "━" * 54)
+    print("  MongoDB Search Diagnostics — Automatic Diagnosis")
+    print("━" * 54)
+    print(f"\nHEALTH STATUS: {color}{health.upper()}{R}  "
+          f"({s['crit']} critical, {s['warn']} warnings, {s['pass']} passed)\n")
+
+    for item in diag.get("healthy", []):
+        print(f"  \033[32m✔{R} {item['title']}")
+
+    if diag.get("warnings"):
+        print()
+        for item in diag["warnings"]:
+            print(f"  \033[33m⚠{R}  {item['title']}")
+            print(f"     {item['detail']}")
+
+    if diag.get("critical"):
+        print()
+        for item in diag["critical"]:
+            print(f"  \033[31m✖{R}  {item['title']}")
+            print(f"     {item['detail']}")
+
+    if diag.get("recommendations"):
+        print("\nRECOMMENDATIONS")
+        for rec in diag["recommendations"]:
+            print(f"  → {rec}")
+
+    print("\n" + "━" * 54 + "\n")
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -99,6 +135,9 @@ def main():
                         help="CORS allowed origins (space-separated). Default: localhost only.")
     parser.add_argument("--auth", default=None,
                         help="Enable HTTP Basic Auth. Format: user:password")
+    parser.add_argument("--diagnose", action="store_true",
+                        help="Run a single diagnostic cycle, print report, and exit. "
+                             "Exit code: 0=healthy, 1=degraded, 2=critical")
     args = parser.parse_args()
 
     state.TARGET_NAMESPACE = args.namespace
@@ -108,6 +147,18 @@ def main():
 
     if args.uri:
         init_mongo(args.uri)
+
+    if args.diagnose:
+        import sys
+        from advisor import format_diagnosis
+        collector = BackgroundCollector(interval=args.interval)
+        log.info("Running single diagnostic cycle...")
+        collector._collect()
+        with state.cache_lock:
+            findings = state.metrics_cache.get("advisor") or []
+        diag = format_diagnosis(findings)
+        _print_diagnosis(diag)
+        sys.exit({"healthy": 0, "degraded": 1, "critical": 2}.get(diag["health"], 1))
 
     basic_auth = None
     if args.auth:
