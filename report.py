@@ -28,6 +28,22 @@ def _ms(sec) -> str:
     return f"{round(float(sec) * 1000)}ms"
 
 
+def _mb(b) -> str:
+    if not b:
+        return "—"
+    return f"{round(float(b) / 1024 / 1024)}MB"
+
+
+def _pct(used, total) -> str:
+    if not total:
+        return "—"
+    return f"{round(float(used) / float(total) * 100)}%"
+
+
+def _cats(prom: dict) -> dict:
+    return prom.get("categories", {})
+
+
 # ── Text (proprietary) ────────────────────────────────────────────────────────
 
 def build_text(data: dict, findings: list) -> str:
@@ -58,22 +74,52 @@ def build_text(data: dict, findings: list) -> str:
     else:
         L.append("  No pods found.")
 
-    # Search metrics
+    # Per-pod metrics sections
     prom_all = (data or {}).get("mongot_prometheus") or {}
-    L.append(sec("SEARCH METRICS"))
-    if prom_all:
-        for pod_name, prom in prom_all.items():
-            cats = prom.get("categories", {})
-            sc   = cats.get("search_commands", {})
-            idx  = cats.get("indexing", {})
-            sync = (idx.get("initial_sync_in_progress") or 0) > 0
-            L.append(f"  Pod: {pod_name}")
-            L.append(f"    $search QPS:        {sc.get('search_qps', 0):.2f}/s")
-            L.append(f"    $search avg lat.:   {_ms(sc.get('search_avg_latency_sec'))}")
-            L.append(f"    $vectorSearch QPS:  {sc.get('vectorsearch_qps', 0):.2f}/s")
-            L.append(f"    Indexing lag:       {idx.get('change_stream_lag_sec', 0):.1f}s")
-            L.append(f"    Initial sync:       {'Yes ⚠' if sync else 'No'}")
-    else:
+    for pod_name, prom in prom_all.items():
+        cats = _cats(prom)
+        sc   = cats.get("search_commands", {})
+        idx  = cats.get("indexing", {})
+        jvm  = cats.get("jvm", {})
+        luc  = cats.get("lucene_merge", {})
+        proc = cats.get("process", {})
+        sync = (idx.get("initial_sync_in_progress") or 0) > 0
+
+        L.append(sec(f"SEARCH COMMANDS — {pod_name}"))
+        L.append(f"  $search QPS:              {sc.get('search_qps', 0):.2f}/s")
+        L.append(f"  $search avg latency:      {_ms(sc.get('search_avg_latency_sec'))}")
+        L.append(f"  $search max latency:      {_ms(sc.get('search_latency_sec'))}")
+        L.append(f"  $search failures:         {int(sc.get('search_failures', 0))}")
+        L.append(f"  $vectorSearch QPS:        {sc.get('vectorsearch_qps', 0):.2f}/s")
+        L.append(f"  $vectorSearch avg lat.:   {_ms(sc.get('vectorsearch_avg_latency_sec'))}")
+        L.append(f"  $vectorSearch failures:   {int(sc.get('vectorsearch_failures', 0))}")
+        L.append(f"  Scan ratio ($search):     {sc.get('scan_ratio', 0):.1f}:1")
+        L.append(f"  Scan ratio ($vecSearch):  {sc.get('vector_scan_ratio', 0):.1f}:1")
+        L.append(f"  HNSW visited nodes:       {int(sc.get('hnsw_visited_nodes', 0))}")
+        L.append(f"  Indexing lag:             {idx.get('change_stream_lag_sec', 0):.1f}s")
+        L.append(f"  Initial sync active:      {'Yes ⚠' if sync else 'No'}")
+
+        L.append(sec(f"JVM HEAP — {pod_name}"))
+        used  = jvm.get("heap_used_bytes", 0)
+        total = jvm.get("heap_max_bytes", 0)
+        comm  = jvm.get("heap_committed_bytes", 0)
+        L.append(f"  Heap used:        {_mb(used)}  ({_pct(used, total)} of max)")
+        L.append(f"  Heap committed:   {_mb(comm)}")
+        L.append(f"  Heap max:         {_mb(total)}")
+        L.append(f"  GC pause max:     {_ms(jvm.get('gc_pause_seconds_max'))}")
+        L.append(f"  Buffer memory:    {_mb(jvm.get('buffer_used_bytes'))}")
+        cpu = proc.get("cpu_usage", 0)
+        L.append(f"  JVM CPU usage:    {round(float(cpu) * 100, 1)}%")
+
+        L.append(sec(f"LUCENE MERGES — {pod_name}"))
+        L.append(f"  Running merges:   {int(luc.get('running_merges', 0))}")
+        L.append(f"  Merging docs:     {int(luc.get('merging_docs', 0)):,}")
+        L.append(f"  Total merges:     {int(luc.get('total_merges', 0)):,}")
+        L.append(f"  Merge time max:   {_ms(luc.get('merge_time_sec_max'))}")
+        L.append(f"  Discarded merges: {int(luc.get('discarded_merges', 0))}")
+
+    if not prom_all:
+        L.append(sec("SEARCH METRICS"))
         L.append("  No Prometheus data available.")
 
     # Oplog
@@ -155,23 +201,52 @@ def build_markdown(data: dict, findings: list) -> str:
         L.append("*No pods found.*")
     L.append("")
 
-    # Search metrics
+    # Per-pod metrics
     prom_all = (data or {}).get("mongot_prometheus") or {}
-    L.append("## Search Metrics\n")
-    if prom_all:
-        for pod_name, prom in prom_all.items():
-            cats = prom.get("categories", {})
-            sc   = cats.get("search_commands", {})
-            idx  = cats.get("indexing", {})
-            sync = (idx.get("initial_sync_in_progress") or 0) > 0
-            L += [f"**{pod_name}**\n",
-                  "| Metric | Value |", "|:-------|:------|",
-                  f"| `$search` QPS | `{sc.get('search_qps', 0):.2f}/s` |",
-                  f"| `$search` avg latency | `{_ms(sc.get('search_avg_latency_sec'))}` |",
-                  f"| `$vectorSearch` QPS | `{sc.get('vectorsearch_qps', 0):.2f}/s` |",
-                  f"| Indexing lag | `{idx.get('change_stream_lag_sec', 0):.1f}s` |",
-                  f"| Initial sync | `{'Yes ⚠' if sync else 'No'}` |", ""]
-    else:
+    for pod_name, prom in prom_all.items():
+        cats = _cats(prom)
+        sc   = cats.get("search_commands", {})
+        idx  = cats.get("indexing", {})
+        jvm  = cats.get("jvm", {})
+        luc  = cats.get("lucene_merge", {})
+        proc = cats.get("process", {})
+        sync = (idx.get("initial_sync_in_progress") or 0) > 0
+        used  = jvm.get("heap_used_bytes", 0)
+        total = jvm.get("heap_max_bytes", 0)
+
+        L += [f"### 🔎 Search Commands — `{pod_name}`\n",
+              "| Metric | Value |", "|:-------|:------|",
+              f"| `$search` QPS | `{sc.get('search_qps', 0):.2f}/s` |",
+              f"| `$search` avg latency | `{_ms(sc.get('search_avg_latency_sec'))}` |",
+              f"| `$search` max latency | `{_ms(sc.get('search_latency_sec'))}` |",
+              f"| `$search` failures | `{int(sc.get('search_failures', 0))}` |",
+              f"| `$vectorSearch` QPS | `{sc.get('vectorsearch_qps', 0):.2f}/s` |",
+              f"| `$vectorSearch` avg latency | `{_ms(sc.get('vectorsearch_avg_latency_sec'))}` |",
+              f"| `$vectorSearch` failures | `{int(sc.get('vectorsearch_failures', 0))}` |",
+              f"| Scan ratio (`$search`) | `{sc.get('scan_ratio', 0):.1f}:1` |",
+              f"| Scan ratio (`$vectorSearch`) | `{sc.get('vector_scan_ratio', 0):.1f}:1` |",
+              f"| HNSW visited nodes | `{int(sc.get('hnsw_visited_nodes', 0))}` |",
+              f"| Indexing lag | `{idx.get('change_stream_lag_sec', 0):.1f}s` |",
+              f"| Initial sync active | `{'Yes ⚠' if sync else 'No'}` |", ""]
+
+        L += [f"### 🧠 JVM Heap — `{pod_name}`\n",
+              "| Metric | Value |", "|:-------|:------|",
+              f"| Heap used | `{_mb(used)}` ({_pct(used, total)} of max) |",
+              f"| Heap committed | `{_mb(jvm.get('heap_committed_bytes'))}` |",
+              f"| Heap max | `{_mb(total)}` |",
+              f"| GC pause max | `{_ms(jvm.get('gc_pause_seconds_max'))}` |",
+              f"| Buffer memory | `{_mb(jvm.get('buffer_used_bytes'))}` |",
+              f"| JVM CPU usage | `{round(float(proc.get('cpu_usage', 0)) * 100, 1)}%` |", ""]
+
+        L += [f"### 🔀 Lucene Merges — `{pod_name}`\n",
+              "| Metric | Value |", "|:-------|:------|",
+              f"| Running merges | `{int(luc.get('running_merges', 0))}` |",
+              f"| Merging docs | `{int(luc.get('merging_docs', 0)):,}` |",
+              f"| Total merges | `{int(luc.get('total_merges', 0)):,}` |",
+              f"| Merge time max | `{_ms(luc.get('merge_time_sec_max'))}` |",
+              f"| Discarded merges | `{int(luc.get('discarded_merges', 0))}` |", ""]
+
+    if not prom_all:
         L.append("*No Prometheus data available.*\n")
 
     # Oplog
@@ -229,10 +304,53 @@ def build_markdown(data: dict, findings: list) -> str:
 
 def build_json(data: dict, findings: list) -> dict:
     health, nc, nw, np_ = _health(findings)
-    pods    = (data or {}).get("mongot_pods") or []
-    prom_all= (data or {}).get("mongot_prometheus") or {}
-    idxs    = (data or {}).get("search_indexes") or []
-    oplog   = (data or {}).get("oplog_info") or {}
+    pods     = (data or {}).get("mongot_pods") or []
+    prom_all = (data or {}).get("mongot_prometheus") or {}
+    idxs     = (data or {}).get("search_indexes") or []
+    oplog    = (data or {}).get("oplog_info") or {}
+
+    metrics_out = {}
+    for pod_name, prom in prom_all.items():
+        cats = _cats(prom)
+        sc   = cats.get("search_commands", {})
+        idx  = cats.get("indexing", {})
+        jvm  = cats.get("jvm", {})
+        luc  = cats.get("lucene_merge", {})
+        proc = cats.get("process", {})
+        metrics_out[pod_name] = {
+            "search_commands": {
+                "search_qps":                  sc.get("search_qps", 0),
+                "search_avg_latency_sec":      sc.get("search_avg_latency_sec", 0),
+                "search_max_latency_sec":      sc.get("search_latency_sec", 0),
+                "search_failures":             int(sc.get("search_failures", 0)),
+                "vectorsearch_qps":            sc.get("vectorsearch_qps", 0),
+                "vectorsearch_avg_latency_sec":sc.get("vectorsearch_avg_latency_sec", 0),
+                "vectorsearch_failures":       int(sc.get("vectorsearch_failures", 0)),
+                "scan_ratio":                  sc.get("scan_ratio", 0),
+                "vector_scan_ratio":           sc.get("vector_scan_ratio", 0),
+                "hnsw_visited_nodes":          int(sc.get("hnsw_visited_nodes", 0)),
+            },
+            "indexing": {
+                "lag_sec":             idx.get("change_stream_lag_sec", 0),
+                "initial_sync_active": (idx.get("initial_sync_in_progress") or 0) > 0,
+            },
+            "jvm": {
+                "heap_used_bytes":      jvm.get("heap_used_bytes", 0),
+                "heap_committed_bytes": jvm.get("heap_committed_bytes", 0),
+                "heap_max_bytes":       jvm.get("heap_max_bytes", 0),
+                "heap_used_pct":        round(float(jvm.get("heap_used_bytes", 0)) / float(jvm.get("heap_max_bytes", 1)) * 100, 1) if jvm.get("heap_max_bytes") else None,
+                "gc_pause_max_sec":     jvm.get("gc_pause_seconds_max", 0),
+                "buffer_used_bytes":    jvm.get("buffer_used_bytes", 0),
+                "cpu_usage_pct":        round(float(proc.get("cpu_usage", 0)) * 100, 1),
+            },
+            "lucene_merges": {
+                "running_merges":   int(luc.get("running_merges", 0)),
+                "merging_docs":     int(luc.get("merging_docs", 0)),
+                "total_merges":     int(luc.get("total_merges", 0)),
+                "merge_time_max_sec": luc.get("merge_time_sec_max", 0),
+                "discarded_merges": int(luc.get("discarded_merges", 0)),
+            },
+        }
 
     return {
         "generated_at":   _ts(),
@@ -249,16 +367,7 @@ def build_json(data: dict, findings: list) -> dict:
             }
             for p in pods
         ],
-        "search_metrics": {
-            pod_name: {
-                "search_qps":             prom.get("categories", {}).get("search_commands", {}).get("search_qps", 0),
-                "search_avg_latency_sec": prom.get("categories", {}).get("search_commands", {}).get("search_avg_latency_sec", 0),
-                "vectorsearch_qps":       prom.get("categories", {}).get("search_commands", {}).get("vectorsearch_qps", 0),
-                "indexing_lag_sec":       prom.get("categories", {}).get("indexing", {}).get("change_stream_lag_sec", 0),
-                "initial_sync_active":    (prom.get("categories", {}).get("indexing", {}).get("initial_sync_in_progress") or 0) > 0,
-            }
-            for pod_name, prom in prom_all.items()
-        },
+        "per_pod_metrics": metrics_out,
         "oplog": {
             "window_hours": oplog.get("window_hours"),
             "head_time":    oplog.get("head_time"),
