@@ -266,6 +266,7 @@ def main():
     BackgroundCollector(interval=args.interval).start()
 
     log.info(f"🚀 Dashboard in esecuzione: http://{args.host}:{args.port}")
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
     flask_app.run(host=args.host, port=args.port, debug=False, threaded=True)
 
 
