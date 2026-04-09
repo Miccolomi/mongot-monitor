@@ -1,102 +1,207 @@
-// ── SRE Advisor Panel (thin renderer — logic lives in advisor.py) ──────────
+// ── SRE Advisor — unified panel ───────────────────────────────────────────────
 
-const ADV_CLS  = { pass: 'st-pass', warn: 'st-warn', crit: 'st-crit' };
-const ADV_ICON = { pass: '🟢 PASSED', warn: '🟡 WARNING', crit: '🔴 CRIT' };
+// Per-check extras: official docs link + actionable commands
+const ADVISOR_EXTRAS = {
+    disk_200_rule: {
+        link: 'https://www.mongodb.com/docs/atlas/atlas-search/manage-indexes/',
+        link_label: 'Search Storage Requirements',
+        commands: ['kubectl exec <pod> -n mongodb -- df -h /var/lib/mongot']
+    },
+    index_consolidation: {
+        link: 'https://www.mongodb.com/docs/atlas/atlas-search/create-index/',
+        link_label: 'Search Index Best Practices',
+        commands: ['db.collection.getSearchIndexes()']
+    },
+    io_bottleneck: {
+        link: 'https://www.mongodb.com/docs/kubernetes-operator/stable/tutorial/storage/',
+        link_label: 'MCK Storage Configuration',
+        commands: ['kubectl get pvc -n mongodb', 'kubectl describe pvc <pvc-name> -n mongodb']
+    },
+    cpu_qps: {
+        link: 'https://www.mongodb.com/docs/atlas/atlas-search/tune-search-performance/',
+        link_label: 'Tune Search Performance',
+        commands: ['kubectl top pods -n mongodb', 'kubectl describe pod <pod> -n mongodb']
+    },
+    page_faults: {
+        link: 'https://www.mongodb.com/docs/atlas/atlas-search/tune-search-performance/#memory',
+        link_label: 'Memory Tuning for Search',
+        commands: ["kubectl describe pod <pod> -n mongodb | grep -A5 'Limits'"]
+    },
+    oom_risk: {
+        link: 'https://www.mongodb.com/docs/atlas/atlas-search/tune-search-performance/#memory',
+        link_label: 'JVM Heap & Memory Configuration',
+        commands: [
+            "kubectl describe pod <pod> -n mongodb | grep -A10 'Last State'",
+            'kubectl edit deployment mongot-doctor -n mongodb  # update memory limits'
+        ]
+    },
+    crd_status: {
+        link: 'https://www.mongodb.com/docs/kubernetes-operator/stable/troubleshooting/',
+        link_label: 'MCK Troubleshooting Guide',
+        commands: [
+            'kubectl get mongodbsearch -n mongodb',
+            'kubectl describe mongodbsearch <name> -n mongodb',
+            'kubectl logs deployment/mongodb-enterprise-operator -n mongodb | tail -50'
+        ]
+    },
+    storage_class: {
+        link: 'https://www.mongodb.com/docs/kubernetes-operator/stable/tutorial/storage/',
+        link_label: 'Recommended Storage Classes',
+        commands: ['kubectl get pvc -n mongodb -o wide', 'kubectl get storageclass']
+    },
+    versioning: {
+        link: 'https://www.mongodb.com/docs/kubernetes-operator/stable/upgrade/',
+        link_label: 'MCK Upgrade Guide',
+        commands: ["kubectl get deployment -n mongodb -o jsonpath='{.items[*].spec.template.spec.containers[0].image}'"]
+    },
+    skip_auth_search: {
+        link: 'https://www.mongodb.com/docs/manual/reference/parameters/#mongodb-parameter-param.skipAuthenticationToSearchIndexManagementServer',
+        link_label: 'skipAuthenticationToSearchIndexManagementServer Docs',
+        commands: ['db.adminCommand({ setParameter: 1, skipAuthenticationToSearchIndexManagementServer: false })']
+    },
+    search_tls_mode: {
+        link: 'https://www.mongodb.com/docs/manual/reference/parameters/#mongodb-parameter-param.searchTLSMode',
+        link_label: 'searchTLSMode Configuration',
+        commands: ["db.adminCommand({ setParameter: 1, searchTLSMode: 'requireTLS' })"]
+    },
+    oplog_window: {
+        link: 'https://www.mongodb.com/docs/manual/core/replica-set-oplog/#oplog-size',
+        link_label: 'Oplog Size Configuration',
+        commands: [
+            'db.getReplicationInfo()  // check current oplog window',
+            'db.adminCommand({ replSetResizeOplog: 1, size: 51200 })  // resize to 50 GB'
+        ]
+    },
+    ram_index_ratio: {
+        link: 'https://www.mongodb.com/docs/atlas/atlas-vector-search/vector-search-overview/',
+        link_label: 'Vector Search Memory Requirements',
+        commands: ['kubectl top pods -n mongodb', "kubectl describe pod <pod> -n mongodb | grep -A5 'Limits'"]
+    },
+    lifecycle_failures: {
+        link: 'https://www.mongodb.com/docs/atlas/atlas-search/troubleshoot-atlas-search/',
+        link_label: 'Search Troubleshooting Guide',
+        commands: [
+            "kubectl logs <pod> -n mongodb | grep -iE 'fail|error' | tail -50",
+            'kubectl exec <pod> -n mongodb -- df -h  // check disk space'
+        ]
+    },
+    scan_ratio: {
+        link: 'https://www.mongodb.com/docs/atlas/atlas-search/tune-search-performance/#improve-query-performance',
+        link_label: 'Improve Search Query Performance',
+        commands: ['db.collection.getSearchIndexes()  // review index definition and analyzer']
+    },
+    vector_scan_ratio: {
+        link: 'https://www.mongodb.com/docs/atlas/atlas-vector-search/vector-search-type/',
+        link_label: 'Vector Search Index Parameters',
+        commands: ['db.collection.getSearchIndexes()  // check efSearch, efConstruction, m']
+    },
+    hnsw_nodes: {
+        link: 'https://www.mongodb.com/docs/atlas/atlas-vector-search/vector-search-type/',
+        link_label: 'HNSW Graph Parameters',
+        commands: ['db.collection.getSearchIndexes()  // review numDimensions, efConstruction, m']
+    },
+};
 
-function buildDiagnosisPanel(findings) {
-    if (!findings || findings.length === 0) return '';
+// Replaces both buildDiagnosisPanel and buildAdvisorHTML
+function buildAdvisorHTML(findings) {
+    if (!findings || findings.length === 0) {
+        return `<div class="c s4" style="background:#0a0d14;border:1px solid #1a1f2e;padding:20px;">
+                  <div style="color:#ffab00;font-size:14px;font-weight:700;letter-spacing:1px;margin-bottom:16px">🏅 SRE ADVISOR</div>
+                  <div class="empty">No advisor data yet.</div>
+                </div>`;
+    }
 
     const crits  = findings.filter(f => f.status === 'crit');
     const warns  = findings.filter(f => f.status === 'warn');
     const passes = findings.filter(f => f.status === 'pass');
     const health = crits.length > 0 ? 'critical' : warns.length > 0 ? 'degraded' : 'healthy';
-    const color  = health === 'critical' ? '#ff1744' : health === 'degraded' ? '#ffab00' : '#00e676';
-    const icon   = health === 'critical' ? '🔴' : health === 'degraded' ? '🟡' : '🟢';
+    const hColor = health === 'critical' ? '#ff1744' : health === 'degraded' ? '#ffab00' : '#00e676';
+    const hIcon  = health === 'critical' ? '🔴' : health === 'degraded' ? '🟡' : '🟢';
+    const hBorder = health === 'critical' ? '#ff174433' : health === 'degraded' ? '#ffab0033' : '#00e67633';
 
-    let h = `<div class="c s4" style="background:#0a0d14;border:1px solid #1a1f2e;padding:20px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:18px">
+    let h = `<div class="c s4" style="background:#0a0d14;border:1px solid ${hBorder};border-top:3px solid ${hColor};padding:20px;">`;
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    h += `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:20px">
         <div>
-          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:#6b7394;margin-bottom:4px">🔬 Automatic Search Diagnosis</div>
-          <div style="font-size:15px;font-weight:700;color:${color}">${icon} Cluster Health — ${health.toUpperCase()}</div>
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:#6b7394;margin-bottom:4px">🏅 SRE Advisor</div>
+          <div style="font-size:16px;font-weight:700;color:${hColor}">${hIcon} Cluster Health — ${health.toUpperCase()}</div>
         </div>
-        <div style="display:flex;gap:16px;font-size:12px;font-weight:600">
+        <div style="display:flex;gap:20px;font-size:12px;font-weight:700">
           <span style="color:#ff1744">✖ ${crits.length} critical</span>
           <span style="color:#ffab00">⚠ ${warns.length} warnings</span>
           <span style="color:#00e676">✔ ${passes.length} passed</span>
         </div>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">`;
+      </div>`;
 
-    // Health Summary column
-    h += `<div>
-      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#00e676;margin-bottom:10px;border-bottom:1px solid #1e2740;padding-bottom:6px">Health Summary</div>`;
-    passes.forEach(f => {
-        h += `<div style="font-size:11px;color:#00e676;padding:3px 0">✔ ${escapeHtml(f.title)}</div>`;
+    // ── crit + warn findings — expanded ───────────────────────────────────────
+    [...crits, ...warns].forEach(f => {
+        const isCrit  = f.status === 'crit';
+        const fColor  = isCrit ? '#ff1744' : '#ffab00';
+        const fBg     = isCrit ? '#ff174408' : '#ffab0008';
+        const fIcon   = isCrit ? '🔴' : '🟡';
+        const extras  = ADVISOR_EXTRAS[f.id] || {};
+        const cmds    = extras.commands || [];
+
+        h += `<div style="background:${fBg};border:1px solid ${fColor}33;border-left:3px solid ${fColor};border-radius:8px;padding:14px;margin-bottom:12px">`;
+
+        // Title + badge
+        h += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <span style="font-size:13px;font-weight:700;color:${fColor}">${fIcon} ${escapeHtml(f.title)}</span>
+            <span style="font-size:10px;background:${fColor}22;color:${fColor};border:1px solid ${fColor}44;border-radius:4px;padding:2px 8px;font-weight:700">${isCrit ? 'CRITICAL' : 'WARNING'}</span>
+          </div>`;
+
+        // Detected value
+        h += `<div style="font-size:11px;color:#c9d1e0;margin-bottom:10px;line-height:1.5">${escapeHtml(f.value)}</div>`;
+
+        // Why it matters
+        h += `<div style="margin-bottom:10px">
+            <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6b7394;margin-bottom:4px">📋 Why it matters</div>
+            <div style="font-size:11px;color:#8892a4;line-height:1.6">${escapeHtml(f.doc)}</div>
+          </div>`;
+
+        // Recommended actions + commands
+        if (cmds.length) {
+            h += `<div style="margin-bottom:10px">
+              <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#00b0ff;margin-bottom:6px">⚡ Recommended actions</div>`;
+            cmds.forEach(cmd => {
+                h += `<div style="background:#080b12;border:1px solid #1a1f2e;border-radius:4px;padding:6px 10px;font-size:10px;color:#c9d1e0;font-family:'JetBrains Mono',monospace;margin-bottom:4px;user-select:all">${escapeHtml(cmd)}</div>`;
+            });
+            h += `</div>`;
+        }
+
+        // Docs link
+        if (extras.link) {
+            h += `<div style="font-size:10px">
+              <a href="${extras.link}" target="_blank" rel="noopener" style="color:#00b0ff;text-decoration:none">
+                📖 ${escapeHtml(extras.link_label || 'Official Documentation')} ↗
+              </a>
+            </div>`;
+        }
+
+        h += `</div>`;
     });
-    if (!passes.length) h += `<div style="font-size:11px;color:#6b7394">—</div>`;
-    h += `</div>`;
 
-    // Warnings column
-    h += `<div>
-      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#ffab00;margin-bottom:10px;border-bottom:1px solid #1e2740;padding-bottom:6px">Warnings${crits.length ? ' &amp; Critical' : ''}</div>`;
-    crits.forEach(f => {
-        h += `<div style="margin-bottom:8px">
-          <div style="font-size:11px;color:#ff1744;font-weight:600">✖ ${escapeHtml(f.title)}</div>
-          <div style="font-size:10px;color:#c9d1e0;margin-top:2px;padding-left:14px">${escapeHtml(f.value)}</div>
-        </div>`;
-    });
-    warns.forEach(f => {
-        h += `<div style="margin-bottom:8px">
-          <div style="font-size:11px;color:#ffab00;font-weight:600">⚠ ${escapeHtml(f.title)}</div>
-          <div style="font-size:10px;color:#c9d1e0;margin-top:2px;padding-left:14px">${escapeHtml(f.value)}</div>
-        </div>`;
-    });
-    if (!crits.length && !warns.length) h += `<div style="font-size:11px;color:#6b7394">No warnings detected.</div>`;
-    h += `</div>`;
-
-    // Recommendations column
-    const actionable = [...crits, ...warns];
-    h += `<div>
-      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#00b0ff;margin-bottom:10px;border-bottom:1px solid #1e2740;padding-bottom:6px">Recommendations</div>`;
-    actionable.forEach(f => {
-        h += `<div style="font-size:11px;color:#c9d1e0;padding:3px 0;line-height:1.5">→ ${escapeHtml(f.doc)}</div>`;
-    });
-    if (!actionable.length) h += `<div style="font-size:11px;color:#6b7394">All checks passed — no action needed.</div>`;
-    h += `</div>`;
-
-    h += `</div></div>`;
-    return h;
-}
-
-function buildAdvisorHTML(findings) {
-    if (!findings || findings.length === 0) {
-        return `<div class="c s4" style="background:#0a0d14; border:1px solid #1a1f2e; padding:20px;">
-                  <h3 style="color:#ffab00; margin-bottom:16px; font-size:14px; letter-spacing:1px;">🏅 COMPLIANCE &amp; BEST PRACTICES ADVISOR</h3>
-                  <div class="empty">No advisor data yet.</div>
-                </div>`;
+    // ── pass findings — compact rows ──────────────────────────────────────────
+    if (passes.length) {
+        h += `<div style="border-top:1px solid #1a1f2e;padding-top:14px;margin-top:4px">
+            <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#00e676;margin-bottom:10px">✔ Passing Checks</div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:4px">`;
+        passes.forEach(f => {
+            h += `<div style="font-size:11px;color:#00e676;padding:4px 8px;background:#00e67608;border-radius:4px;border:1px solid #00e67622">
+                ✔ <span style="font-weight:600">${escapeHtml(f.title)}</span>
+                <span style="color:#6b7394;font-size:10px;display:block;padding-left:14px;margin-top:1px">${escapeHtml(f.value)}</span>
+              </div>`;
+        });
+        h += `</div></div>`;
     }
 
-    let h = `<div class="c s4" style="background:#0a0d14; border:1px solid #1a1f2e; padding:20px;">
-             <h3 style="color:#ffab00; margin-bottom:16px; font-size:14px; letter-spacing:1px;">🏅 COMPLIANCE &amp; BEST PRACTICES ADVISOR</h3>`;
-
-    const last = findings.length - 1;
-    findings.forEach((f, i) => {
-        const cls = ADV_CLS[f.status] || 'st-pass';
-        const ico = ADV_ICON[f.status] || ADV_ICON.pass;
-        const style = i === last ? 'border-bottom:none; margin-bottom:0; padding-bottom:0;' : '';
-        h += `<div class="adv-card" style="${style}">
-                <div class="adv-title">
-                  <span>${escapeHtml(f.title)}</span>
-                  <span class="${cls}">${ico}</span>
-                </div>
-                <div class="adv-val"><b>Detected:</b> ${escapeHtml(f.value)}</div>
-                <div class="adv-doc">📖 Doc: ${escapeHtml(f.doc)}</div>
-              </div>`;
-    });
-
     h += `</div>`;
     return h;
 }
+
+// Kept for backwards compatibility — now a no-op (panel merged into buildAdvisorHTML)
+function buildDiagnosisPanel() { return ''; }
 
 // ── Log Intelligence ──────────────────────────────────────────────────────────
 

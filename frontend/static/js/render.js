@@ -78,8 +78,7 @@ function render(d) {
   // Search Index Inspector banner (outside grid, above)
   setupIndexInspector();
 
-  // 2. DIAGNOSIS PANEL + SRE ADVISOR
-  h += buildDiagnosisPanel(d._advisor_findings || []);
+  // 2. SRE ADVISOR (unified panel — diagnosis + advisor + recommendations)
   h += buildAdvisorHTML(d._advisor_findings || []);
 
   // 3. PODS & PROMETHEUS METRICS
