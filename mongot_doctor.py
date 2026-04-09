@@ -212,7 +212,7 @@ def main():
 
     if args.report:
         import sys, json as _json
-        from report import build_text, build_markdown, build_json
+        from status_report import build_text, build_markdown, build_json
         collector = BackgroundCollector(interval=args.interval)
         log.info("Running single collection cycle for report...")
         collector._collect()

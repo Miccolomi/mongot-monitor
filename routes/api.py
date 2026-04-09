@@ -9,6 +9,7 @@ from flask import Blueprint, jsonify, request, Response
 
 import state
 from security import is_valid_k8s_name
+from status_report import build_text, build_markdown, build_json
 
 api_bp = Blueprint("api", __name__)
 
@@ -198,7 +199,6 @@ def analyze_logs(namespace, pod_name):
 @api_bp.route("/api/report")
 def report():
     import json as _json
-    from report import build_text, build_markdown, build_json
 
     fmt = request.args.get("format", "text").lower()
     if fmt not in ("text", "markdown", "json"):

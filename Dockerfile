@@ -7,7 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source
-COPY advisor.py background.py security.py state.py mongot_doctor.py ./
+COPY advisor.py background.py security.py state.py status_report.py mongot_doctor.py ./
 COPY collectors/ collectors/
 COPY engine/ engine/
 COPY routes/ routes/
