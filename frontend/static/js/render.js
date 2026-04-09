@@ -86,7 +86,7 @@ function render(d) {
   const pm=d.pod_metrics||{};
 
   pods.forEach(p => {
-    const isOOM = p.containers.some(c => c.last_reason === 'OOMKilled');
+    const isOOM = (p.containers || []).some(c => c.last_reason === 'OOMKilled');
     const m=pm[p.name]||{}, prom=promAll[p.name]||{}, cat=prom.categories||{};
     const sc=cat.search_commands||{}, jvm=cat.jvm||{}, proc=cat.process||{}, mem=cat.memory||{}, dsk=cat.disk||{}, net=cat.network||{}, idx=cat.indexing||{}, luc=cat.lucene_merge||{}, lc=cat.lifecycle||{};
 

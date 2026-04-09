@@ -89,10 +89,17 @@ def scrape_mongot_prometheus(pod_name: str, namespace: str, pod_ip: str, port: i
             ),
             "results_returned":        g("mongot_query_results_returned_total"),
             # Vector search candidates / results (separate ratio)
+            # Fallback for older mongot versions that use different metric names
             "vector_candidates_examined": (
-                g("mongot_vector_query_candidates_examined_total") or 0
+                g("mongot_vector_query_candidates_examined_total") or
+                g("mongot_vector_candidates_examined_total") or
+                g("mongot_vector_candidates_examined") or 0
             ),
-            "vector_results_returned": g("mongot_vector_query_results_returned_total"),
+            "vector_results_returned": (
+                g("mongot_vector_query_results_returned_total") or
+                g("mongot_vector_results_returned_total") or
+                g("mongot_vector_results_returned") or 0
+            ),
             # HNSW graph traversal — ANN efficiency proxy
             # High values → ANN degenerating toward brute-force
             "hnsw_visited_nodes": (

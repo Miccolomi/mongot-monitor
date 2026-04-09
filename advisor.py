@@ -245,6 +245,37 @@ def _check_oom(pods: list, prom_all: dict) -> Finding:
     )
 
 
+def _check_lifecycle_failures(pods: list, prom_all: dict) -> Finding | None:
+    """Check for failed index lifecycle operations (downloads, drops, initializations)."""
+    total_failures = 0
+    messages = []
+
+    for p in pods:
+        lc = (prom_all.get(p["name"]) or {}).get("categories", {}).get("lifecycle", {})
+        failed_dl   = lc.get("failed_downloads", 0) or 0
+        failed_drop = lc.get("failed_drops", 0) or 0
+        failed_init = lc.get("failed_initializations", 0) or 0
+        pod_total   = failed_dl + failed_drop + failed_init
+
+        if pod_total > 0:
+            total_failures += pod_total
+            parts = []
+            if failed_dl:   parts.append(f"{int(failed_dl)} failed download(s)")
+            if failed_drop: parts.append(f"{int(failed_drop)} failed drop(s)")
+            if failed_init: parts.append(f"{int(failed_init)} failed initialization(s)")
+            messages.append(f"Pod {p['name']}: {', '.join(parts)}")
+
+    if not messages:
+        return None
+
+    return _finding(
+        "lifecycle_failures", "Index Lifecycle Failures", "crit",
+        " | ".join(messages) + ". Check mongot logs for root cause.",
+        "Lifecycle failures indicate mongot cannot manage index files correctly. "
+        "Check disk space, permissions, and mongot logs for IOException or similar errors.",
+    )
+
+
 def _check_crd_status(crds: list) -> Finding:
     for c in crds:
         if c.get("phase") != "Running":
@@ -636,6 +667,7 @@ def run_advisor(snapshot: Snapshot) -> list[Finding]:
         _check_search_tls(server_params),
         _check_oplog_window(oplog_info, pods, prom_all),
         _check_ram_vs_index(pods, prom_all, indexes),
+        _check_lifecycle_failures(pods, prom_all),
         _check_scan_ratio(pods, prom_all),
         _check_vector_scan_ratio(pods, prom_all),
         _check_hnsw_nodes(pods, prom_all),
