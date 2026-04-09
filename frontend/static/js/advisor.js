@@ -13,7 +13,7 @@ const ADVISOR_EXTRAS = {
         commands: ['db.collection.getSearchIndexes()']
     },
     io_bottleneck: {
-        link: 'https://www.mongodb.com/docs/kubernetes-operator/stable/tutorial/storage/',
+        link: 'https://www.mongodb.com/docs/kubernetes/current/tutorial/configure-mongodb-specific-storage/',
         link_label: 'MCK Storage Configuration',
         commands: ['kubectl get pvc -n mongodb', 'kubectl describe pvc <pvc-name> -n mongodb']
     },
@@ -36,7 +36,7 @@ const ADVISOR_EXTRAS = {
         ]
     },
     crd_status: {
-        link: 'https://www.mongodb.com/docs/kubernetes-operator/stable/troubleshooting/',
+        link: 'https://www.mongodb.com/docs/kubernetes/current/reference/troubleshooting/',
         link_label: 'MCK Troubleshooting Guide',
         commands: [
             'kubectl get mongodbsearch -n mongodb',
@@ -45,12 +45,12 @@ const ADVISOR_EXTRAS = {
         ]
     },
     storage_class: {
-        link: 'https://www.mongodb.com/docs/kubernetes-operator/stable/tutorial/storage/',
+        link: 'https://www.mongodb.com/docs/kubernetes/current/tutorial/configure-mongodb-specific-storage/',
         link_label: 'Recommended Storage Classes',
         commands: ['kubectl get pvc -n mongodb -o wide', 'kubectl get storageclass']
     },
     versioning: {
-        link: 'https://www.mongodb.com/docs/kubernetes-operator/stable/upgrade/',
+        link: 'https://www.mongodb.com/docs/kubernetes-operator/upcoming/tutorial/upgrade-k8s-operator/',
         link_label: 'MCK Upgrade Guide',
         commands: ["kubectl get deployment -n mongodb -o jsonpath='{.items[*].spec.template.spec.containers[0].image}'"]
     },
