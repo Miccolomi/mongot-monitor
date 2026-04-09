@@ -124,6 +124,10 @@ def scrape_mongot_prometheus(pod_name: str, namespace: str, pod_ip: str, port: i
             "phys_total_bytes": g("mongot_system_memory_phys_total_bytes"),
             "phys_inuse_bytes": g("mongot_system_memory_phys_inUse_bytes"),
             "swap_inuse_bytes": g("mongot_system_memory_virt_swap_inUse_bytes"),
+            "major_page_faults_sec": (
+                g("mongot_system_memory_pageFaults_pageFaultsPS") or
+                g("mongot_process_major_faults_total") or 0
+            ),
         },
         "disk": {
             "data_path_free_bytes":  g("mongot_system_disk_space_data_path_free_bytes"),

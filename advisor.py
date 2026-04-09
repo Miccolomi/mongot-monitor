@@ -163,7 +163,8 @@ def _check_cpu_qps(pods: list, prom_all: dict, search_perf: dict) -> Finding:
     )
 
 
-def _check_page_faults(pods: list, prom_all: dict) -> Finding:
+def _check_page_faults(pods: list, prom_all: dict, indexes: list) -> Finding:
+    has_vector = any(idx.get("type") == "vectorSearch" for idx in indexes)
     for p in pods:
         pf = (prom_all.get(p["name"]) or {}).get("categories", {}).get("memory", {}).get("major_page_faults_sec", 0)
         if pf > 1000:
@@ -178,6 +179,14 @@ def _check_page_faults(pods: list, prom_all: dict) -> Finding:
                 "page_faults", "Memory Starvation (Page Faults)", "warn",
                 f"Pod {p['name']}: {pf:.0f} major page faults/sec — monitor memory closely.",
                 "If Search page faults are consistently over 1000/s, the system needs more memory.",
+            )
+        # For vector search, page faults should be as close to 0 as possible
+        if has_vector and pf > 10:
+            return _finding(
+                "page_faults", "Memory Starvation (Page Faults)", "warn",
+                f"Pod {p['name']}: {pf:.0f} page faults/sec detected with active vector indexes. "
+                "For $vectorSearch, page faults must stay near 0 — the full vector index must fit in RAM.",
+                "Scale up RAM or enable vector quantization to reduce index size to ~4% of full size.",
             )
     return _finding(
         "page_faults", "Memory Starvation (Page Faults)", "pass",
@@ -506,6 +515,56 @@ def _check_hnsw_nodes(pods: list, prom_all: dict) -> Finding | None:
     )
 
 
+def _check_ram_vs_index(pods: list, prom_all: dict, indexes: list) -> Finding | None:
+    """Check if search index size fits in available system RAM."""
+    has_vector = any(idx.get("type") == "vectorSearch" for idx in indexes)
+
+    for p in pods:
+        cats = (prom_all.get(p["name"]) or {}).get("categories", {})
+        mem = cats.get("memory", {})
+        dsk = cats.get("disk", {})
+
+        ram_total = mem.get("phys_total_bytes", 0)
+        dsk_total = dsk.get("data_path_total_bytes", 0)
+        dsk_free  = dsk.get("data_path_free_bytes", 0)
+        index_size = dsk_total - dsk_free
+
+        if not ram_total or not index_size:
+            continue
+
+        ratio = index_size / ram_total
+
+        if ratio > 1.0:
+            return _finding(
+                "ram_index_ratio", "Search Index vs System RAM", "crit",
+                f"Pod {p['name']}: index size ({_fmt_bytes(index_size)}) exceeds system RAM "
+                f"({_fmt_bytes(ram_total)}). Page faults are inevitable — all queries hit disk.",
+                "Scale up RAM to exceed index size. For vector indexes, enable quantization "
+                "to reduce in-memory footprint to ~4% of full index size.",
+            )
+        if ratio > 0.75:
+            return _finding(
+                "ram_index_ratio", "Search Index vs System RAM", "warn",
+                f"Pod {p['name']}: index size ({_fmt_bytes(index_size)}) is {ratio*100:.0f}% "
+                f"of system RAM ({_fmt_bytes(ram_total)}) — little headroom left.",
+                "Scale up RAM before index grows further. For vector indexes, consider quantization.",
+            )
+        # Vector-specific: recommend quantization if index > 3 GB even if ratio is OK
+        if has_vector and index_size > 3e9:
+            return _finding(
+                "ram_index_ratio", "Search Index vs System RAM", "warn",
+                f"Pod {p['name']}: vector index exceeds 3 GB ({_fmt_bytes(index_size)}). "
+                "Consider vector quantization — reduces in-memory footprint to ~4% of full size.",
+                "Enable vector quantization in the index definition to significantly reduce RAM requirements.",
+            )
+
+    return _finding(
+        "ram_index_ratio", "Search Index vs System RAM", "pass",
+        "Index size is within safe bounds relative to system RAM.",
+        "Keep index size below 75% of available RAM. For vector indexes > 3 GB, consider quantization.",
+    )
+
+
 def _check_oplog_window(oplog_info: dict, pods: list, prom_all: dict) -> Finding | None:
     if not oplog_info or not oplog_info.get("head_timestamp"):
         return None
@@ -565,7 +624,7 @@ def run_advisor(snapshot: Snapshot) -> list[Finding]:
         _check_index_consolidation(indexes),
         _check_io_bottleneck(pods, prom_all),
         _check_cpu_qps(pods, prom_all, search_perf),
-        _check_page_faults(pods, prom_all),
+        _check_page_faults(pods, prom_all, indexes),
         _check_oom(pods, prom_all),
         _check_crd_status(crds),
         _check_storage_class(pvcs),
@@ -576,6 +635,7 @@ def run_advisor(snapshot: Snapshot) -> list[Finding]:
         _check_skip_auth(server_params),
         _check_search_tls(server_params),
         _check_oplog_window(oplog_info, pods, prom_all),
+        _check_ram_vs_index(pods, prom_all, indexes),
         _check_scan_ratio(pods, prom_all),
         _check_vector_scan_ratio(pods, prom_all),
         _check_hnsw_nodes(pods, prom_all),
